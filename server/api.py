@@ -923,17 +923,35 @@ def _list_clockin_preauthorizations_for_user(
     target_type: Optional[str],
     refresh_plan: bool,
 ) -> Dict[str, Any]:
-    needs_plan = refresh_plan
-    if not needs_plan:
+    # Reading a list must not fan out slow third-party login attempts.
+    if refresh_plan:
+        _rate_limit(
+            f"preauthorization_plan_sync:{user.tenant_id}:{user.id}",
+            limit=1,
+            per_seconds=60,
+            detail="实习计划同步过于频繁，请至少等待一分钟后重试",
+        )
         try:
+            _sync_preauthorization_plan(user, force=True)
             parse_plan_end_date(user.planInfo)
-        except ValueError:
-            needs_plan = True
-    if needs_plan:
-        _sync_preauthorization_plan(user, force=True)
+        except HTTPException:
+            session.rollback()
+            raise
+        except Exception as exc:
+            session.rollback()
+            logger.warning("preauthorization plan sync failed: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="第三方实习计划同步失败，可能需要完成登录验证或稍后重试；后台服务正常，已保存的数据不受影响",
+            ) from exc
         session.add(user)
         session.commit()
         session.refresh(user)
+    else:
+        try:
+            parse_plan_end_date(user.planInfo)
+        except ValueError as exc:
+            raise ValueError("尚未同步有效实习计划，请点击「同步实习计划」后重试") from exc
     return list_preauthorizations(
         session,
         user,
@@ -2664,15 +2682,7 @@ def admin_login(request: Request, response: Response, req: LoginRequest):
     username = (req.username or "").strip()
     password = (req.password or "").strip()
     tenant_id = DEFAULT_TENANT_ID
-    _rate_limit_login_attempt(
-        scope="admin_login",
-        client_ip=client_ip,
-        tenant_id=tenant_id,
-        principal=username,
-        ip_limit=10,
-        principal_limit=5,
-        per_seconds=60,
-    )
+    # 管理员登录不做账号/IP频率限流；密码校验、失败锁定和审计仍保留。
     with Session(engine) as session:
         require_active_tenant(tenant_id, session=session)
         user = session.exec(

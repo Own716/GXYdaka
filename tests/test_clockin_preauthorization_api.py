@@ -239,9 +239,21 @@ class ClockInPreauthorizationApiTest(unittest.TestCase):
         self.assertNotIn("out_register_no", result)
         self.assertNotIn("register-secret", str(result))
 
-    def test_list_syncs_plan_when_end_time_is_missing(self):
+    def test_list_never_logs_in_when_plan_is_missing(self):
         user = build_user()
         user.planInfo = {}
+        session = Mock()
+        with patch.object(api, "_sync_preauthorization_plan") as sync_plan:
+            with self.assertRaisesRegex(ValueError, "尚未同步有效实习计划"):
+                api._list_clockin_preauthorizations_for_user(
+                    session, user, scope="future", page=1, page_size=20,
+                    status=None, target_type=None, refresh_plan=False,
+                )
+        sync_plan.assert_not_called()
+        session.commit.assert_not_called()
+
+    def test_list_uses_saved_plan_without_remote_calls(self):
+        user = build_user()
         session = Mock()
         expected = {"items": [], "total": 0}
 
@@ -261,8 +273,43 @@ class ClockInPreauthorizationApiTest(unittest.TestCase):
             )
 
         self.assertIs(result, expected)
-        sync_plan.assert_called_once_with(user, force=True)
+        sync_plan.assert_not_called()
         list_items.assert_called_once()
+
+    def test_explicit_sync_failure_is_actionable_and_rolls_back(self):
+        user = build_user()
+        session = Mock()
+        with (
+            patch.object(api, "_rate_limit") as rate_limit,
+            patch.object(api, "_sync_preauthorization_plan", side_effect=Exception("secret upstream error")),
+        ):
+            with self.assertRaises(api.HTTPException) as caught:
+                api._list_clockin_preauthorizations_for_user(
+                    session, user, scope="future", page=1, page_size=20,
+                    status=None, target_type=None, refresh_plan=True,
+                )
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertIn("第三方", caught.exception.detail)
+        self.assertNotIn("secret", caught.exception.detail)
+        session.rollback.assert_called_once()
+        session.commit.assert_not_called()
+        self.assertEqual(rate_limit.call_args.kwargs["limit"], 1)
+
+    def test_explicit_sync_saves_valid_plan_once(self):
+        user = build_user()
+        session = Mock()
+        with (
+            patch.object(api, "_rate_limit"),
+            patch.object(api, "_sync_preauthorization_plan") as sync_plan,
+            patch.object(api, "list_preauthorizations", return_value={"items": []}),
+        ):
+            api._list_clockin_preauthorizations_for_user(
+                session, user, scope="future", page=1, page_size=20,
+                status=None, target_type=None, refresh_plan=True,
+            )
+        sync_plan.assert_called_once_with(user, force=True)
+        session.commit.assert_called_once()
+        session.refresh.assert_called_once_with(user)
 
     def test_app_run_injects_user_preauthorization_hooks(self):
         user = build_user()

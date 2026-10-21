@@ -102,7 +102,10 @@ class FrontendSessionValidationTest(unittest.TestCase):
 
         for source in (admin_http, user_http):
             self.assertIn("resolveApiErrorMessage", source)
-        self.assertIn("后端服务不可用", error_helper)
+        self.assertIn("网络连接失败", error_helper)
+        self.assertIn("请求超时", error_helper)
+        self.assertIn("status === 503", error_helper)
+        self.assertNotIn("VITE_API_PROXY_TARGET", error_helper)
         self.assertIn("ERR_NETWORK", error_helper)
 
     def test_user_settings_page_supports_push_notifications(self):

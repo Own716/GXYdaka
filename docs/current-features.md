@@ -291,7 +291,7 @@
 | AI 配额 | 受全局每日、用户每日和窗口限流控制 |
 | 定时任务 | 使用数据库锁避免重复执行 |
 | 批量队列 | queued 原子认领为 running，写入 owner、lease token 和到期时间 |
-| 数据库限流 | 登录和注册同时按 IP 与账号维度限流 |
+| 数据库限流 | 用户端登录和注册按 IP 与账号维度限流；管理员登录不限频，保留密码错误锁定和审计 |
 | metrics | `/metrics` JSON，`/metrics.prom` Prometheus 文本；生产需要 token |
 | 模型下载 | 生产默认不在启动时自动下载验证码 ONNX 模型 |
 | schema | 生产默认不做运行时 schema 写操作，启动校验 Alembic head |

@@ -12,6 +12,7 @@ const props = defineProps({
 })
 
 const PAGE_SIZE = 20
+const LIST_REQUEST_TIMEOUT = 12000
 
 const createListState = () => reactive({
   items: [],
@@ -83,9 +84,11 @@ const updateMetadata = (data) => {
 }
 
 const loadFuture = async ({ refreshPlan = false } = {}) => {
+  if (future.loading) return false
   future.loading = true
   try {
     const response = await apiClient.value.get(apiBase.value, {
+      timeout: LIST_REQUEST_TIMEOUT,
       params: {
         scope: 'future',
         page: future.page,
@@ -107,9 +110,11 @@ const loadFuture = async ({ refreshPlan = false } = {}) => {
 }
 
 const loadPast = async () => {
+  if (past.loading) return false
   past.loading = true
   try {
     const response = await apiClient.value.get(apiBase.value, {
+      timeout: LIST_REQUEST_TIMEOUT,
       params: {
         scope: 'past',
         page: past.page,
@@ -268,18 +273,18 @@ onMounted(loadFuture)
         <span class="section-count">共 {{ future.total }} 项</span>
       </div>
       <div class="filter-row" aria-label="未来预授权筛选">
-        <el-select v-model="future.status" clearable placeholder="全部状态" size="small">
+        <el-select v-model="future.status" :disabled="future.loading" clearable placeholder="全部状态" size="small">
           <el-option label="待授权" value="pending" />
           <el-option label="已授权" value="authorized" />
           <el-option label="已使用" value="consumed" />
           <el-option label="需重新授权" value="reauthorize_required" />
         </el-select>
-        <el-select v-model="future.targetType" clearable placeholder="全部类型" size="small">
+        <el-select v-model="future.targetType" :disabled="future.loading" clearable placeholder="全部类型" size="small">
           <el-option label="上班" value="START" />
           <el-option label="下班" value="END" />
         </el-select>
-        <el-button size="small" type="primary" @click="applyFutureFilters">筛选</el-button>
-        <el-button size="small" @click="resetFutureFilters">清除</el-button>
+        <el-button size="small" type="primary" :disabled="future.loading" @click="applyFutureFilters">筛选</el-button>
+        <el-button size="small" :disabled="future.loading" @click="resetFutureFilters">清除</el-button>
       </div>
       <ClockInPreauthorizationList
         :items="future.items"
@@ -309,14 +314,14 @@ onMounted(loadFuture)
       <el-collapse-transition>
         <div v-show="pastExpanded" class="past-content">
           <div class="filter-row" aria-label="历史预授权筛选">
-            <el-select v-model="past.status" clearable placeholder="全部状态" size="small">
+            <el-select v-model="past.status" :disabled="past.loading" clearable placeholder="全部状态" size="small">
               <el-option label="待授权" value="pending" />
               <el-option label="已授权" value="authorized" />
               <el-option label="已使用" value="consumed" />
               <el-option label="需重新授权" value="reauthorize_required" />
             </el-select>
-            <el-button size="small" type="primary" @click="applyPastFilters">筛选</el-button>
-            <el-button size="small" @click="resetPastFilters">清除</el-button>
+            <el-button size="small" type="primary" :disabled="past.loading" @click="applyPastFilters">筛选</el-button>
+            <el-button size="small" :disabled="past.loading" @click="resetPastFilters">清除</el-button>
           </div>
           <ClockInPreauthorizationList
             :items="past.items"

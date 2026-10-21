@@ -1,5 +1,5 @@
-const BACKEND_UNAVAILABLE_MESSAGE =
-  '后端服务不可用，请确认 8147 服务已启动，并检查 VITE_API_PROXY_TARGET 是否指向正确地址'
+const NETWORK_ERROR_MESSAGE = '网络连接失败，请检查网络后重试'
+const TIMEOUT_ERROR_MESSAGE = '请求超时，请稍后重试'
 
 const normalizeResponseMessage = (data) => {
   if (!data) return ''
@@ -22,16 +22,23 @@ const normalizeResponseMessage = (data) => {
 export const resolveApiErrorMessage = (error) => {
   const response = error?.response
   const dataMessage = normalizeResponseMessage(response?.data)
+  if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
+    return TIMEOUT_ERROR_MESSAGE
+  }
+
+  if (response && Number(response.status || 0) >= 500) {
+    const status = Number(response.status)
+    if (status === 503) return dataMessage || '服务暂时不可用，请稍后重试'
+    if (status === 504) return '服务器响应超时，请稍后重试'
+    if (status === 500) return '服务器处理请求时出错，请稍后重试'
+    return '服务暂时不可用，请稍后重试'
+  }
+
   if (dataMessage) return dataMessage
 
   if (!response || error?.code === 'ERR_NETWORK') {
-    return BACKEND_UNAVAILABLE_MESSAGE
-  }
-
-  if (Number(response.status || 0) >= 500) {
-    return BACKEND_UNAVAILABLE_MESSAGE
+    return NETWORK_ERROR_MESSAGE
   }
 
   return error?.message || '请求失败'
 }
-

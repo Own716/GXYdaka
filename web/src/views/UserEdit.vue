@@ -771,7 +771,6 @@ const fetchUser = async () => {
       if (!form.reportSettings.monthly.submitAt) form.reportSettings.monthly.submitAt = '12:00'
     }
     form.pushNotifications = normalizePushNotifications(form.pushNotifications)
-    await Promise.all([loadClockInMissingDays(), loadAllReportPeriodOptions()])
   } catch (error) {
     notifyError('加载失败')
   } finally {

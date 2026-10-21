@@ -568,9 +568,6 @@ const load = async () => {
     weeklyEnabled.value = !!_ensureObj(rs.weekly).enabled
     monthlyEnabled.value = !!_ensureObj(rs.monthly).enabled
     assignPushNotifications(me.value.pushNotifications)
-    if (bound.value) {
-      await Promise.all([loadClockInMissingDays(), loadAllReportPeriodOptions()])
-    }
   } catch (e) {
     notifyError(resolveErrorMessage(e, '加载失败'))
   } finally {
