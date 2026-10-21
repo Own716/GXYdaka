@@ -175,3 +175,25 @@ cosign verify \
 | 验证范围 | 管理员、用户、批量任务、审计日志、系统设置、用户端接口 |
 | 结束灰度 | 清空 `ROLE_PERMISSIONS_JSON`，回到内置权限策略 |
 | 事故回滚 | 保留审计日志和变更记录，不要只改前端隐藏菜单 |
+
+## 当前 Linux 主机的仓库部署
+
+`scripts/deploy_host.py` 是一次性部署入口，不自建轮询、定时器或后台常驻任务。由 GitHub `main` 分支推送事件的接收方调用；同一主机的文件锁会阻止并发发布，重复提交不会重复部署。
+
+当前主机命令：
+
+```bash
+/workspace/gongxueyun/.venv/bin/python /workspace/gxy-deploy/deploy_host.py --config /workspace/gxy-deploy/config.json
+```
+
+部署器从公开仓库拉取 `main` 最新提交，以完整 SHA 保存到 `/workspace/gxy-deploy/releases/`，先在独立测试数据库执行后端测试及前端测试/构建，再备份生产数据库并原子切换 `/workspace/gxy-deploy/current`。两个 systemd 服务分别运行 API 与后台任务。仅在新版本的两项 `/readyz` 检查均通过后记录部署成功；失败会切回旧目录并检查旧版服务是否恢复。原 `/workspace/gongxueyun` 保留为首次回退版本，不覆盖其中的配置、模型或数据库。
+
+配置与测试凭据仅保存在主机，不提交仓库。查看部署状态与验证日志：
+
+```bash
+cat /workspace/gxy-deploy/status.json
+ls /workspace/gxy-deploy/logs/
+systemctl status gongxueyun-api gongxueyun-worker --no-pager
+```
+
+同一失败提交不会持续重试。确认修复后可添加 `--retry` 手动重试，或推送新提交。若 `server/migrations` 内容变化，部署器会在切换前停止，要求先人工评估并执行数据库迁移；不会擅自自动改动生产表结构。主机中的 SQL 快照只在受限目录内保存，不应上传仓库或公开分享。部署依赖主机在线与 GitHub/软件包源可访问；主机休眠期间不能保证即时更新。主机部署器自身更新需在检查仓库中脚本变更后同步到 `/workspace/gxy-deploy/deploy_host.py`。

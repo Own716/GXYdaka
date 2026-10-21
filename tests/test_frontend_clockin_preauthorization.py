@@ -10,6 +10,22 @@ def read(relative_path):
 
 
 class FrontendClockInPreauthorizationTest(unittest.TestCase):
+    def test_opening_page_only_loads_list_and_sync_remains_explicit(self):
+        source = read("web/src/components/ClockInPreauthorizationPage.vue")
+
+        self.assertIn("const loadFuture = async ({ refreshPlan = false } = {})", source)
+        self.assertIn("onMounted(loadFuture)", source)
+        self.assertIn("loadFuture({ refreshPlan: true })", source)
+        self.assertNotIn("setInterval", source)
+        self.assertNotIn("setTimeout", source)
+
+    def test_list_reuses_date_time_formatter_across_rows(self):
+        source = read("web/src/components/ClockInPreauthorizationList.vue")
+
+        self.assertEqual(source.count("new Intl.DateTimeFormat("), 1)
+        self.assertIn("const DATE_TIME_FORMATTER = new Intl.DateTimeFormat", source)
+        self.assertIn("DATE_TIME_FORMATTER.format(parsed)", source)
+
     def test_shared_page_uses_two_api_prefixes_and_past_scope(self):
         source = read("web/src/components/ClockInPreauthorizationPage.vue")
 

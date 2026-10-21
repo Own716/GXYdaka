@@ -912,6 +912,14 @@ def _sync_preauthorization_plan(
     return api_client, config_data
 
 
+def _raise_preauthorization_upstream_error(exc: Exception) -> None:
+    logger.warning("preauthorization upstream operation failed: %s", type(exc).__name__)
+    raise HTTPException(
+        status_code=503,
+        detail="第三方预授权服务暂时不可用，请稍后重试",
+    ) from exc
+
+
 def _list_clockin_preauthorizations_for_user(
     session: Session,
     user: User,
@@ -973,7 +981,12 @@ def _start_clockin_preauthorization_for_user(
     try:
         parse_plan_end_date(user.planInfo)
     except ValueError:
-        _sync_preauthorization_plan(user, force=True)
+        try:
+            _sync_preauthorization_plan(user, force=True)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _raise_preauthorization_upstream_error(exc)
     validate_preauthorization_target(
         user,
         target_date=target_date,
@@ -992,13 +1005,23 @@ def _start_clockin_preauthorization_for_user(
         if existing is not None:
             raise ValueError("该日期已有有效预授权")
 
-    api_client, config_data = _sync_preauthorization_plan(user, force=False)
+    try:
+        api_client, config_data = _sync_preauthorization_plan(user, force=False)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_preauthorization_upstream_error(exc)
     validate_preauthorization_target(
         user,
         target_date=target_date,
         target_type=target_type,
     )
-    registration = api_client.create_alipay_clockin_verification()
+    try:
+        registration = api_client.create_alipay_clockin_verification()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_preauthorization_upstream_error(exc)
     started_at = datetime.datetime.now(BEIJING_TZ)
     direct_url, browser_url = build_alipay_open_urls(
         str(registration.get("registerUrl") or ""),

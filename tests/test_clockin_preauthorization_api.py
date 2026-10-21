@@ -113,6 +113,57 @@ class ClockInPreauthorizationApiTest(unittest.TestCase):
 
         api_client_type.assert_not_called()
 
+    def test_start_plan_sync_failure_is_sanitized_and_does_not_register(self):
+        user = build_user()
+        user.planInfo = {}
+        request_model = api.ClockInPreauthorizationStartRequest(
+            target_date="2026-07-16",
+            target_type="START",
+        )
+
+        with (
+            patch.object(
+                api,
+                "_sync_preauthorization_plan",
+                side_effect=RuntimeError("private upstream response"),
+            ),
+            patch.object(api, "ApiClient") as api_client_type,
+            self.assertRaises(api.HTTPException) as caught,
+        ):
+            api._start_clockin_preauthorization_for_user(user, request_model)
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertIn("第三方", caught.exception.detail)
+        self.assertNotIn("private upstream response", caught.exception.detail)
+        api_client_type.assert_not_called()
+
+    def test_start_registration_failure_is_sanitized(self):
+        user = build_user()
+        request_model = api.ClockInPreauthorizationStartRequest(
+            target_date="2026-07-16",
+            target_type="START",
+        )
+        client = Mock()
+        client.create_alipay_clockin_verification.side_effect = RuntimeError(
+            "private registration response"
+        )
+
+        with (
+            patch.object(api, "validate_preauthorization_target"),
+            patch.object(
+                api,
+                "_sync_preauthorization_plan",
+                return_value=(client, {"config": {}}),
+            ),
+            self.assertRaises(api.HTTPException) as caught,
+        ):
+            api._start_clockin_preauthorization_for_user(user, request_model)
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertIn("第三方", caught.exception.detail)
+        self.assertNotIn("private registration response", caught.exception.detail)
+        client.create_alipay_clockin_verification.assert_called_once_with()
+
     def test_start_rate_limit_supports_bulk_future_authorization_on_both_surfaces(self):
         user = build_user()
         request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
