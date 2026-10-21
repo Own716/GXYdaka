@@ -603,8 +603,8 @@ class PlatformFoundationsTest(unittest.TestCase):
         self.assertGreaterEqual(versions["python-dotenv"], (1, 2, 2))
         self.assertGreaterEqual(versions["requests"], (2, 33, 0))
         self.assertGreaterEqual(versions["python-multipart"], (0, 0, 31))
-        self.assertGreaterEqual(versions["pillow"], (12, 3, 0))
-        self.assertGreaterEqual(versions["cryptography"], (48, 0, 1))
+        self.assertGreaterEqual(versions["pillow"], (13, 0, 0))
+        self.assertGreaterEqual(versions["cryptography"], (50, 0, 2))
 
     def test_frontend_lockfile_uses_non_vulnerable_vite(self):
         package = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
@@ -662,9 +662,15 @@ class PlatformFoundationsTest(unittest.TestCase):
     def test_docker_and_actions_are_pinned_for_supply_chain(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "docker-publish.yml").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
         self.assertIn("FROM node:20-alpine@", dockerfile)
-        self.assertIn("FROM python:3.10-slim@", dockerfile)
+        self.assertIn(
+            "FROM python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47",
+            dockerfile,
+        )
+        self.assertIn('python-version: "3.12"', workflow)
+        self.assertIn("| Python | 3.12+ |", readme)
         self.assertNotIn("ACTIONS_ALLOW_UNPINNED", workflow)
         self.assertIn("Verify action pinning", workflow)
 

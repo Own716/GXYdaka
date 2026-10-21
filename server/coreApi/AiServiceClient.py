@@ -246,6 +246,8 @@ def generate_article(
     max_retries: int = 3,
     retry_delay: int = 1,
     timeout: int = 600,
+    min_words: Optional[int] = None,
+    max_words: Optional[int] = None,
 ) -> str:
     """
     生成日报、周报、月报。
@@ -279,8 +281,20 @@ def generate_article(
     endpoint_port = int(endpoint_detail.get("port") or (443 if endpoint_detail.get("scheme") == "https" else 80))
     logger.info("AI endpoint selected: %s", endpoint_detail)
 
-    min_count = _clamp_int(count, default=500, min_value=1, max_value=1000)
-    max_chars = 1000
+    if min_words is None:
+        min_count = _clamp_int(count, default=500, min_value=1, max_value=1000)
+    else:
+        if isinstance(min_words, bool) or not isinstance(min_words, int) or not 1 <= min_words <= 10000:
+            raise ValueError("min_words must be an integer from 1 to 10000")
+        min_count = min_words
+    if max_words is None:
+        max_chars = 1000
+    else:
+        if isinstance(max_words, bool) or not isinstance(max_words, int) or not 1 <= max_words <= 10000:
+            raise ValueError("max_words must be an integer from 1 to 10000")
+        max_chars = max_words
+    if max_chars < min_count:
+        raise ValueError("max_words must be greater than or equal to min_words")
     request_timeout = _ai_timeout_seconds(timeout)
     request_retries = _ai_max_retries(max_retries)
 

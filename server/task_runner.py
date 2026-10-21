@@ -16,6 +16,8 @@ from server.clockin_backfill import (
     normalize_clockin_records,
     parse_clockin_date,
 )
+from server.report_rules import validate_report_content, validate_report_settings
+from server.schedule_rules import clockin_date_allowed
 from server.database import engine
 from server.models import DEFAULT_TENANT_ID
 from server.settings_store import get_setting
@@ -315,6 +317,16 @@ def perform_clock_in(
         current_hour = current_time.hour
         address = config.get_value("config.clockIn.location.address")
 
+        if not replace and not clockin_date_allowed(
+            config.get_value("config.clockIn") or {}, current_time.date()
+        ):
+            return {
+                "status": "skip",
+                "message": "今天不符合打卡日期设置，已跳过打卡",
+                "task_type": "打卡",
+                "details": {"打卡时间": current_time.strftime("%Y-%m-%d %H:%M:%S")},
+            }
+
         # 确定打卡类型
         if forced_checkin_type in ("START", "END"):
             checkin_type = forced_checkin_type
@@ -333,7 +345,9 @@ def perform_clock_in(
         should_skip = False
         skip_message = ""
 
-        if not replace and clock_in_mode == "holiday" and is_holiday(current_time):
+        clock_in_settings = config.get_value("config.clockIn") or {}
+        schedule_settings = clock_in_settings.get("schedule") or {} if isinstance(clock_in_settings, dict) else {}
+        if not replace and clock_in_mode == "holiday" and "skipHolidays" not in schedule_settings and is_holiday(current_time):
             if not special_clock_in:
                 should_skip = True
                 skip_message = "今天是休息日，已跳过打卡"
@@ -343,7 +357,9 @@ def perform_clock_in(
 
         elif not replace and clock_in_mode == "custom":
             today_weekday = current_time.weekday() + 1
-            custom_days = config.get_value("config.clockIn.customDays") or []
+            custom_days = schedule_settings.get("weekdays")
+            if custom_days is None:
+                custom_days = config.get_value("config.clockIn.customDays") or []
             if today_weekday not in custom_days:
                 if not special_clock_in:
                     should_skip = True
@@ -752,6 +768,8 @@ def _submit_report_common(
         }
 
     try:
+        raw_report_settings = config.get_value(f"config.reportSettings.{config_key}") or {}
+        report_settings = validate_report_settings(raw_report_settings)
         # 检查是否已提交
         submitted_reports_info = get_submitted_func()
         submitted_reports = submitted_reports_info.get("data", [])
@@ -782,13 +800,28 @@ def _submit_report_common(
             user_id=config.get_value("userInfo.userId"),
             raise_http_exception=False,
         )
+        configured_paper_count = config.get_value(paper_num_key)
+        try:
+            legacy_minimum = int(configured_paper_count)
+        except (TypeError, ValueError):
+            legacy_minimum = report_settings["minWords"] if any(key in raw_report_settings for key in ("minWords", "maxWords")) else 500
+        legacy_minimum = max(1, min(1000, legacy_minimum))
+        generation_minimum = max(report_settings["minWords"], legacy_minimum)
+        if generation_minimum > report_settings["maxWords"]:
+            raise ValueError(
+                "configured report generation minimum exceeds reportSettings.maxWords"
+            )
         content = generate_article(
             config,
             title,
             job_info,
-            config.get_value(paper_num_key),
-            (submitted_reports or [])[:4]
+            generation_minimum,
+            (submitted_reports or [])[:4],
+            min_words=generation_minimum,
+            max_words=report_settings["maxWords"],
         )
+        # Enforce the configured range before uploads or any remote report submit.
+        content_word_count = validate_report_content(content, report_settings)
 
         # 上传图片
         img_count = config.get_value(image_count_key)
@@ -839,6 +872,8 @@ def _submit_report_common(
                 "标题": title,
                 "提交时间": current_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "附件": attachments,
+                "字数": content_word_count,
+                "字数范围": f"{report_settings['minWords']}..{report_settings['maxWords']}",
                 **extra_details,
             },
             "report_content": content,
@@ -951,7 +986,11 @@ def submit_monthly_report(
     submit_day = config.get_value("config.reportSettings.monthly.submitTime")
     submit_at = config.get_value("config.reportSettings.monthly.submitAt") or "12:00"
     # 默认每月20号
-    if not isinstance(submit_day, int):
+    if not (
+        isinstance(submit_day, int) and not isinstance(submit_day, bool)
+    ) and not (
+        isinstance(submit_day, str) and submit_day.strip().lower() == "last"
+    ):
         submit_day = 20
 
     def parse_submit_time(value) -> tuple[int, int]:
@@ -966,7 +1005,11 @@ def submit_monthly_report(
     def check_time(t: datetime) -> bool:
         next_month = t.replace(day=28) + timedelta(days=4)
         last_day_of_month = (next_month - timedelta(days=next_month.day)).day
-        target_day = min(submit_day, last_day_of_month)
+        target_day = (
+            last_day_of_month
+            if isinstance(submit_day, str) and submit_day.strip().lower() == "last"
+            else min(submit_day, last_day_of_month)
+        )
         if t.day != target_day:
             return False
         hh, mm = parse_submit_time(submit_at)

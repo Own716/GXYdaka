@@ -15,6 +15,7 @@ from typing import Dict, Any
 from server.execution_locks import acquire_task_lock, release_task_lock
 from server.observability import record_task_event
 from server.security import int_env
+from server.schedule_rules import clockin_date_allowed, validate_clockin_schedule
 
 def _resolve_scheduler_timezone():
     tz_name = (os.getenv("SCHEDULER_TIMEZONE") or os.getenv("TZ") or "").strip()
@@ -66,7 +67,9 @@ def _parse_hhmm(value: Any, default_h: int, default_m: int):
 
 def _get_schedule(user: User) -> Dict[str, Any]:
     clock_in = user.clockIn or {}
-    schedule = (clock_in.get("schedule") or {}) if isinstance(clock_in, dict) else {}
+    schedule = clock_in.get("schedule", {}) if isinstance(clock_in, dict) else {}
+    if not isinstance(schedule, dict):
+        schedule = {}
     start_time = schedule.get("startTime") or "07:30"
     end_time = schedule.get("endTime") or "18:00"
     weekdays = schedule.get("weekdays")
@@ -76,12 +79,16 @@ def _get_schedule(user: User) -> Dict[str, Any]:
         weekdays = [1, 2, 3, 4, 5, 6, 7]
     total_days = schedule.get("totalDays") if isinstance(schedule, dict) else None
     start_date = schedule.get("startDate") if isinstance(schedule, dict) else None
+    end_date = schedule.get("endDate") if isinstance(schedule, dict) else None
+    skip_holidays = schedule.get("skipHolidays", False) if isinstance(schedule, dict) else False
     return {
         "startTime": start_time,
         "endTime": end_time,
         "weekdays": weekdays,
         "totalDays": total_days,
         "startDate": start_date,
+        "endDate": end_date,
+        "skipHolidays": skip_holidays,
     }
 
 
@@ -100,16 +107,24 @@ def run_job(user_id: int, forced_checkin_type: str):
         schedule = _get_schedule(user)
         total_days = schedule.get("totalDays")
         start_date = schedule.get("startDate")
+        now = datetime.datetime.now(scheduler.timezone or _resolve_scheduler_timezone() or datetime.timezone.utc)
+        today = now.date()
+        try:
+            validate_clockin_schedule(user.clockIn or {})
+        except ValueError as exc:
+            logger.warning("用户 %s 的打卡日期计划无效，跳过任务: %s", user_id, exc)
+            return
+
         if isinstance(total_days, int) and total_days > 0:
             if not start_date:
-                start_date = datetime.date.today().strftime("%Y-%m-%d")
+                start_date = today.strftime("%Y-%m-%d")
                 if isinstance(user.clockIn, dict):
                     user.clockIn.setdefault("schedule", {})["startDate"] = start_date
                     session.add(user)
                     session.commit()
             try:
                 start_dt = datetime.datetime.strptime(str(start_date), "%Y-%m-%d").date()
-                if datetime.date.today() >= (start_dt + datetime.timedelta(days=total_days)):
+                if today >= (start_dt + datetime.timedelta(days=total_days)):
                     user.enable_clockin = False
                     session.add(user)
                     session.commit()
@@ -118,7 +133,15 @@ def run_job(user_id: int, forced_checkin_type: str):
                     return
             except Exception as exc:
                 logger.warning("invalid schedule startDate for user %s: %r (%s)", user_id, start_date, exc)
-            
+
+        try:
+            if not clockin_date_allowed(user.clockIn or {}, today):
+                logger.info("用户 %s 不在打卡日期范围内，跳过任务 (%s)", user_id, today)
+                return
+        except ValueError as exc:
+            logger.warning("用户 %s 的打卡日期计划无效，跳过任务: %s", user_id, exc)
+            return
+
         config_data = user_to_config(user)
         preauthorization_hooks = build_preauthorization_hooks(user, db_engine=engine)
 
@@ -247,11 +270,16 @@ def run_report_job(user_id: int, specific_task_type: str):
 
 def add_user_job(user: User):
     schedule = _get_schedule(user)
+    clockin_schedule_valid = True
+    if user.enable_clockin:
+        try:
+            validate_clockin_schedule(user.clockIn or {})
+        except ValueError as exc:
+            clockin_schedule_valid = False
+            logger.warning("用户 %s 的打卡日期计划无效，不注册打卡任务: %s", user.id, exc)
     start_h, start_m = _parse_hhmm(schedule.get("startTime"), 7, 30)
     end_h, end_m = _parse_hhmm(schedule.get("endTime"), 18, 0)
     dow = _weekday_list_to_cron(schedule.get("weekdays"))
-    if not dow:
-        return
     try:
         jitter_seconds = int(os.getenv("SCHEDULER_JITTER_SECONDS") or "600")
     except Exception:
@@ -263,10 +291,10 @@ def add_user_job(user: User):
         report_jitter_seconds = 0
     report_jitter_seconds = max(0, min(report_jitter_seconds, 3600))
 
-    if user.enable_clockin:
+    if user.enable_clockin and clockin_schedule_valid and dow:
         scheduler.add_job(
             run_job,
-            CronTrigger(day_of_week=dow, hour=start_h, minute=start_m, jitter=jitter_seconds),
+            CronTrigger(timezone=scheduler.timezone, day_of_week=dow, hour=start_h, minute=start_m, jitter=jitter_seconds),
             args=[user.id, "START"],
             id=f"user_{user.id}_start",
             replace_existing=True,
@@ -276,7 +304,7 @@ def add_user_job(user: User):
         )
         scheduler.add_job(
             run_job,
-            CronTrigger(day_of_week=dow, hour=end_h, minute=end_m, jitter=jitter_seconds),
+            CronTrigger(timezone=scheduler.timezone, day_of_week=dow, hour=end_h, minute=end_m, jitter=jitter_seconds),
             args=[user.id, "END"],
             id=f"user_{user.id}_end",
             replace_existing=True,
@@ -298,7 +326,7 @@ def add_user_job(user: User):
             hh, mm = _parse_hhmm_str(submit_time, 12, 0)
             scheduler.add_job(
                 run_report_job,
-                CronTrigger(day_of_week=daily_dow, hour=hh, minute=mm, jitter=report_jitter_seconds),
+                CronTrigger(timezone=scheduler.timezone, day_of_week=daily_dow, hour=hh, minute=mm, jitter=report_jitter_seconds),
                 args=[user.id, "daily_report"],
                 id=f"user_{user.id}_daily_report",
                 replace_existing=True,
@@ -318,7 +346,7 @@ def add_user_job(user: User):
         if weekly_dow:
             scheduler.add_job(
                 run_report_job,
-                CronTrigger(day_of_week=weekly_dow, hour=hh, minute=mm, jitter=report_jitter_seconds),
+                CronTrigger(timezone=scheduler.timezone, day_of_week=weekly_dow, hour=hh, minute=mm, jitter=report_jitter_seconds),
                 args=[user.id, "weekly_report"],
                 id=f"user_{user.id}_weekly_report",
                 replace_existing=True,
@@ -328,17 +356,21 @@ def add_user_job(user: User):
             )
 
     if monthly.get("enabled") is True:
-        try:
-            submit_day = int(monthly.get("submitTime"))
-        except Exception:
-            submit_day = 20
-        submit_day = max(1, min(submit_day, 31))
-        day_expr = "28,29,30,31" if submit_day >= 28 else str(submit_day)
+        submit_value = monthly.get("submitTime")
+        if isinstance(submit_value, str) and submit_value.strip().lower() == "last":
+            day_expr = "last"
+        else:
+            try:
+                submit_day = int(submit_value)
+            except Exception:
+                submit_day = 20
+            submit_day = max(1, min(submit_day, 31))
+            day_expr = "28,29,30,31" if submit_day >= 28 else str(submit_day)
         submit_at = monthly.get("submitAt") or "12:00"
         hh, mm = _parse_hhmm_str(submit_at, 12, 0)
         scheduler.add_job(
             run_report_job,
-            CronTrigger(day=day_expr, hour=hh, minute=mm, jitter=report_jitter_seconds),
+            CronTrigger(timezone=scheduler.timezone, day=day_expr, hour=hh, minute=mm, jitter=report_jitter_seconds),
             args=[user.id, "monthly_report"],
             id=f"user_{user.id}_monthly_report",
             replace_existing=True,

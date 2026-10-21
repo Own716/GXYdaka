@@ -5,6 +5,9 @@ from server.database import get_session, engine
 from server.batch_jobs import get_batch_job_item_status_counts
 from server.models import DEFAULT_TENANT_ID, User, UserCreate, UserRead, UserUpdate, UserListRead, AuditLog, BatchJob, BatchJobItem, AdminUser, AppUser, SystemSetting, ClockInPreauthorization
 from server.scheduler import add_user_job, remove_user_job, user_to_config
+from server.account_location import saved_account_location, latest_start_location, account_location_payload
+from server.schedule_rules import validate_clockin_schedule, preview_clockin_dates
+from server.report_rules import validate_report_settings, validate_report_content
 from server.task_runner import perform_clock_in, perform_clock_in_makeup, perform_clock_in_makeup_many, run_task_by_config
 from server.clockin_backfill import build_missing_clockin_day_options, normalize_clockin_records, parse_clockin_date
 from server.clockin_preauthorization import (
@@ -357,6 +360,7 @@ def _sanitize_user_for_read(user: User) -> Dict[str, Any]:
     except Exception:
         data["password"] = ""
     data["pushNotifications"] = normalize_push_notifications(data.get("pushNotifications"))
+    data.update(account_location_payload(saved_account_location(user.userInfo, user.planInfo)))
     return data
 
 def _sanitize_user_for_self(user: User) -> Dict[str, Any]:
@@ -368,6 +372,7 @@ def _sanitize_user_for_self(user: User) -> Dict[str, Any]:
     if "app_password_hash" in data:
         data["app_password_hash"] = None
     data["pushNotifications"] = normalize_push_notifications(data.get("pushNotifications"))
+    data.update(account_location_payload(saved_account_location(user.userInfo, user.planInfo)))
     return data
 
 
@@ -1221,6 +1226,8 @@ def _build_report_info(
     job_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     report_type = meta["report_type"]
+    report_key = {"day": "daily", "week": "weekly", "month": "monthly"}[report_type]
+    validate_report_content(content, config.get_value(f"config.reportSettings.{report_key}") or {})
     current_time = _parse_report_target_for_api(report_type, target_period)
     submitted_data = submitted if isinstance(submitted, dict) else api_client.get_submitted_reports_info(report_type) or {}
     submitted_reports = submitted_data.get("data", []) if isinstance(submitted_data, dict) else []
@@ -1275,13 +1282,25 @@ def _generate_report_content_for_user(user: User, report_key: str, target_period
     job_info = api_client.get_job_info()
     content = ""
     if generate_content:
+        raw_report_settings = (user.reportSettings or {}).get(report_key, {})
+        settings = validate_report_settings(raw_report_settings)
+        try:
+            legacy_minimum = int(config.get_value(meta["paper_num_key"]))
+        except (TypeError, ValueError):
+            legacy_minimum = settings["minWords"] if any(key in raw_report_settings for key in ("minWords", "maxWords")) else 500
+        minimum = max(settings["minWords"], max(1, min(1000, legacy_minimum)))
+        if minimum > settings["maxWords"]:
+            raise ValueError("报告字数上限低于实习计划要求，请调整字数范围")
         content = generate_article(
             config,
             title,
             job_info,
-            config.get_value(meta["paper_num_key"]),
+            minimum,
             (submitted.get("data", []) if isinstance(submitted, dict) else [])[:4],
+            min_words=minimum,
+            max_words=settings["maxWords"],
         )
+        validate_report_content(content, settings)
     return {
         "config_data": config_data,
         "title": title,
@@ -1665,6 +1684,79 @@ def app_bind(
         add_user_job(user)
     return {"ok": True, "user_id": user.id}
 
+def _read_account_location(user: User) -> Dict[str, Any]:
+    """Fetch remote metadata only; applying a candidate requires an explicit save."""
+    if not str(user.phone or "").strip() or not str(user.password or "").strip():
+        raise HTTPException(status_code=400, detail="请先保存工学云账号和密码")
+    try:
+        config_data = user_to_config(user)
+        config = ConfigManager(config=config_data)
+        api_client = ApiClient(config)
+        _ensure_remote_runtime(api_client, config)
+        candidate = saved_account_location(config_data.get("userInfo"), config_data.get("planInfo"))
+        if not candidate:
+            candidate = latest_start_location(api_client.get_checkin_records())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="获取上班位置失败，请稍后重试；原打卡坐标未更改") from exc
+    payload = account_location_payload(candidate)
+    address = candidate.get("address") if candidate else None
+    return {"ok": True, **payload, "address": address,
+            "addressCandidates": [address] if address else [],
+            "maskedAddress": _mask_address(address),
+            "maskedCandidates": [_mask_address(address)] if address else []}
+
+
+class SchedulePreviewRequest(BaseModel):
+    clockIn: Dict[str, Any]
+
+
+def _validate_user_rules(clock_in=None, report_settings=None):
+    try:
+        if clock_in is not None:
+            validate_clockin_schedule(clock_in)
+        if report_settings is not None:
+            if not isinstance(report_settings, dict):
+                raise ValueError("reportSettings 必须为对象")
+            for key in ("daily", "weekly", "monthly"):
+                settings = report_settings.get(key, {})
+                validate_report_settings(settings)
+                if not isinstance(settings, dict):
+                    raise ValueError(f"{key} 设置必须为对象")
+                submit_day = settings.get("submitTime")
+                if key != "daily" and submit_day is not None:
+                    maximum = 7 if key == "weekly" else 31
+                    if not (key == "monthly" and submit_day == "last") and (
+                        isinstance(submit_day, bool) or not isinstance(submit_day, int) or not 1 <= submit_day <= maximum
+                    ):
+                        raise ValueError(f"{key} 提交日必须为1至{maximum}" + ("或last" if key == "monthly" else ""))
+                time_value = settings.get("submitTime" if key == "daily" else "submitAt")
+                if time_value is not None and (not isinstance(time_value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", time_value)):
+                    raise ValueError(f"{key} 提交时刻必须为HH:mm")
+                if key == "daily" and "submitDays" in settings:
+                    validate_clockin_schedule({"schedule": {"weekdays": settings["submitDays"]}})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/schedule/preview")
+def preview_schedule(req: SchedulePreviewRequest, operator: dict = Depends(require_users_write)):
+    try:
+        dates = preview_clockin_dates(req.clockIn)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    timezone = (os.getenv("SCHEDULER_TIMEZONE") or os.getenv("TZ") or "Asia/Shanghai").strip()
+    return {"dates": dates, "timezone": timezone}
+
+
+@router.post("/users/{user_id}/refresh")
+def refresh_user_account(*, request: Request, user_id: int,
+                         session: Session = Depends(get_session),
+                         operator: dict = Depends(require_users_read)):
+    user = _get_active_user_for_payload(session, user_id, operator)
+    _rate_limit(f"account_location:{get_client_ip(request)}:{user.id}", limit=3, per_seconds=60)
+    return _read_account_location(user)
+
+
 @router.get("/app/account-address")
 def app_account_address(
     *,
@@ -1680,65 +1772,8 @@ def app_account_address(
     if not (str(user.phone or "").strip()) or not (str(user.password or "").strip()):
         raise HTTPException(status_code=400, detail="该用户未保存账号或密码，无法自动获取账号地址")
 
-    try:
-        config_data = user_to_config(user)
-        config = ConfigManager(config=config_data)
-        api_client = ApiClient(config)
-        _ensure_remote_runtime(api_client, config)
-        checkin = api_client.get_checkin_info() or {}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e) or "获取账号地址失败")
+    return _read_account_location(user)
 
-    candidates: List[str] = []
-    for k in [
-        "address",
-        "detailAddress",
-        "lastDetailAddress",
-        "lastAddress",
-        "practiceAddress",
-        "practiceDetailAddress",
-        "companyAddress",
-        "workAddress",
-    ]:
-        v = checkin.get(k)
-        if isinstance(v, str):
-            s = v.strip()
-            if s and s not in candidates:
-                candidates.append(s)
-
-    best = candidates[0] if candidates else None
-    if candidates:
-        best = sorted(candidates, key=lambda x: len(x), reverse=True)[0]
-    if not best:
-        raise HTTPException(status_code=404, detail="未获取到账号地址（可能该账号暂无打卡记录）")
-
-    try:
-        clock_in = user.clockIn if isinstance(user.clockIn, dict) else {}
-        loc = clock_in.get("location") if isinstance(clock_in.get("location"), dict) else {}
-        loc2 = dict(loc)
-        loc2["address"] = best
-        parts = [p.strip() for p in re.split(r"\s*[·,/，,]\s*", str(best)) if p and p.strip()]
-        if len(parts) >= 1 and not loc2.get("province"):
-            loc2["province"] = parts[0]
-        if len(parts) >= 2 and not loc2.get("city"):
-            loc2["city"] = parts[1]
-        if len(parts) >= 3 and not loc2.get("area"):
-            loc2["area"] = parts[2]
-        clock_in2 = dict(clock_in)
-        clock_in2["location"] = loc2
-        user.clockIn = clock_in2
-        session.add(user)
-        session.commit()
-    except Exception:
-        session.rollback()
-
-    return {
-        "ok": True,
-        "address": best,
-        "addressCandidates": candidates,
-        "checkinTime": checkin.get("attendenceTime"),
-        "type": checkin.get("type"),
-    }
 
 @router.patch("/app/me")
 def app_update_me(
@@ -1749,6 +1784,7 @@ def app_update_me(
 ):
     app_user = _get_authed_app_user(session=session, payload=payload)
     user = _get_bound_task_user(session=session, app_user=app_user)
+    _validate_user_rules(req.clockIn, req.reportSettings)
     changed: List[str] = []
     if req.password is not None:
         pw = (req.password or "").strip()
@@ -2359,6 +2395,7 @@ def app_submit_daily_report(
             "reportTime": current_time.strftime("%Y-%m-%d %H:%M:%S"),
             "formFieldDtoList": generated["api_client"].get_from_info(7),
         }
+        validate_report_content(report_info["content"], (user.reportSettings or {}).get("daily", {}))
         generated["api_client"].submit_report(report_info)
         sync_runtime_fields_to_user(user, generated["config_data"])
         session.add(user)
@@ -2664,7 +2701,7 @@ def _ensure_clockin_schedule_defaults(user: User):
     schedule.setdefault("startTime", "07:30")
     schedule.setdefault("endTime", "18:00")
     weekdays = schedule.get("weekdays")
-    if not isinstance(weekdays, list) or len(weekdays) == 0:
+    if weekdays is None:
         custom_days = user.clockIn.get("customDays")
         if isinstance(custom_days, list) and len(custom_days) > 0:
             schedule["weekdays"] = custom_days
@@ -3153,6 +3190,7 @@ def reset_admin_user_password(
 
 @router.post("/users", response_model=UserRead)
 def create_user(*, session: Session = Depends(get_session), user: UserCreate, operator: dict = Depends(require_users_write)):
+    _validate_user_rules(user.clockIn, user.reportSettings)
     db_user = User.model_validate(user)
     db_user.tenant_id = tenant_id_from_payload(operator)
     db_user.password = encrypt_secret(db_user.password)
@@ -3323,68 +3361,7 @@ def read_user_account_address(
     if not (str(user.phone or "").strip()) or not (str(user.password or "").strip()):
         raise HTTPException(status_code=400, detail="该用户未保存账号或密码，无法自动获取账号地址")
 
-    try:
-        config_data = user_to_config(user)
-        config = ConfigManager(config=config_data)
-        api_client = ApiClient(config)
-        _ensure_remote_runtime(api_client, config)
-        checkin = api_client.get_checkin_info() or {}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e) or "获取账号地址失败")
-
-    candidates: List[str] = []
-    for k in [
-        "address",
-        "detailAddress",
-        "lastDetailAddress",
-        "lastAddress",
-        "practiceAddress",
-        "practiceDetailAddress",
-        "companyAddress",
-        "workAddress",
-    ]:
-        v = checkin.get(k)
-        if isinstance(v, str):
-            s = v.strip()
-            if s and s not in candidates:
-                candidates.append(s)
-
-    best = candidates[0] if candidates else None
-    if candidates:
-        best = sorted(candidates, key=lambda x: len(x), reverse=True)[0]
-    if not best:
-        raise HTTPException(status_code=404, detail="未获取到账号地址（可能该账号暂无打卡记录）")
-
-    try:
-        clock_in = user.clockIn if isinstance(user.clockIn, dict) else {}
-        loc = clock_in.get("location") if isinstance(clock_in.get("location"), dict) else {}
-        loc2 = dict(loc)
-        loc2["address"] = best
-        parts = [p.strip() for p in re.split(r"\s*[·,/，,]\s*", str(best)) if p and p.strip()]
-        if len(parts) >= 1 and not loc2.get("province"):
-            loc2["province"] = parts[0]
-        if len(parts) >= 2 and not loc2.get("city"):
-            loc2["city"] = parts[1]
-        if len(parts) >= 3 and not loc2.get("area"):
-            loc2["area"] = parts[2]
-        clock_in2 = dict(clock_in)
-        clock_in2["location"] = loc2
-        user.clockIn = clock_in2
-        sync_runtime_fields_to_user(user, config_data)
-        session.add(user)
-        session.commit()
-    except Exception:
-        session.rollback()
-
-    return {
-        "ok": True,
-        "address": best,
-        "addressCandidates": candidates,
-        "maskedAddress": _mask_address(best),
-        "maskedCandidates": [_mask_address(x) for x in candidates],
-        "checkinTime": checkin.get("attendenceTime"),
-        "type": checkin.get("type"),
-    }
+    return _read_account_location(user)
 
 
 @router.get("/users/{user_id}/clock-in/missing-days")
@@ -3580,6 +3557,7 @@ def update_user(*, session: Session = Depends(get_session), user_id: int, user_u
     db_user = _get_active_user_for_payload(session, user_id, operator)
 
     user_data = user_update.dict(exclude_unset=True)
+    _validate_user_rules(user_data.get("clockIn"), user_data.get("reportSettings"))
     if "password" in user_data:
         user_data["password"] = encrypt_secret(str(user_data.get("password") or ""))
     user_data.pop("ai", None)
@@ -4397,6 +4375,7 @@ def submit_daily_report_manual(
             "reportTime": current_time.strftime("%Y-%m-%d %H:%M:%S"),
             "formFieldDtoList": generated["api_client"].get_from_info(7),
         }
+        validate_report_content(report_info["content"], (user.reportSettings or {}).get("daily", {}))
         generated["api_client"].submit_report(report_info)
         sync_runtime_fields_to_user(user, generated["config_data"])
         session.add(user)

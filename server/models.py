@@ -92,6 +92,8 @@ class UserCreate(UserBase):
 
 class UserRead(UserBase):
     id: int
+    accountLocation: Optional[Dict[str, Any]] = None
+    locationMessage: Optional[str] = None
     deleted_at: Optional[datetime.datetime] = None
     last_run_time: Optional[str]
     last_status: Optional[str]

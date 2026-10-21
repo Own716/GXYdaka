@@ -1269,6 +1269,35 @@
         "tags": []
       }
     },
+    "/api/schedule/preview": {
+      "post": {
+        "operation_id": "preview_schedule_api_schedule_preview_post",
+        "parameters": [],
+        "request_body": {
+          "content": {
+            "application/json": {
+              "$ref": "#/components/schemas/SchedulePreviewRequest"
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      }
+    },
     "/api/settings/ai": {
       "get": {
         "operation_id": "get_ai_settings_api_settings_ai_get",
@@ -2136,6 +2165,40 @@
     "/api/users/{user_id}/job-info": {
       "get": {
         "operation_id": "read_user_job_info_api_users__user_id__job_info_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "request_body": {
+          "content": {},
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      }
+    },
+    "/api/users/{user_id}/refresh": {
+      "post": {
+        "operation_id": "refresh_user_account_api_users__user_id__refresh_post",
         "parameters": [
           {
             "in": "path",
@@ -3197,6 +3260,17 @@
       ],
       "type": "object"
     },
+    "SchedulePreviewRequest": {
+      "properties": {
+        "clockIn": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "clockIn"
+      ],
+      "type": "object"
+    },
     "UserCreate": {
       "properties": {
         "app_enabled": {
@@ -3359,6 +3433,16 @@
     },
     "UserRead": {
       "properties": {
+        "accountLocation": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "app_enabled": {
           "type": "boolean"
         },
@@ -3412,6 +3496,16 @@
           ]
         },
         "last_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "locationMessage": {
           "anyOf": [
             {
               "type": "string"

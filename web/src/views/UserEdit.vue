@@ -45,7 +45,8 @@
               />
               <div class="place-actions">
                 <el-button type="primary" @click="searchPlace">搜索</el-button>
-                <el-button :disabled="!isEdit" :loading="addrFillLoading" @click="fillFromAccountAddress">账号地址填充</el-button>
+                <el-button :disabled="!isEdit" :loading="accountRefreshLoading" @click="refreshAccountLocation">获取账号信息/上班位置</el-button>
+                <el-button :disabled="!isEdit" :loading="addrFillLoading" @click="fillFromAccountAddress">读取账号地址候选</el-button>
               </div>
             </div>
           </el-form-item>
@@ -53,12 +54,43 @@
           <div class="map external-map">
             <iframe :src="mapDisplayUrl" title="经纬度查询地图" loading="lazy" referrerpolicy="no-referrer"></iframe>
           </div>
+          <el-alert
+            v-if="accountLocationMessage || accountLocation"
+            :title="accountLocation ? `账号位置候选 · 来源：${accountLocation.source || '来源未说明'}` : (accountLocationMessage || '未获取到账号位置候选')"
+            :description="accountLocation ? (accountLocationMessage || '候选仅供核对，不会自动写入打卡位置；可编辑后手动应用。缺少经纬度时不可应用。') : accountLocationMessage"
+            :type="accountLocation ? 'info' : 'warning'"
+            :closable="false"
+            show-icon
+            class="account-location-alert"
+          />
+          <div v-if="accountLocation" class="account-location-candidate">
+            <el-form-item label="候选地址"><el-input v-model="accountLocation.address" /></el-form-item>
+            <el-row>
+              <el-col :xs="24" :sm="12"><el-form-item label="候选纬度"><el-input v-model="accountLocation.latitude" /></el-form-item></el-col>
+              <el-col :xs="24" :sm="12"><el-form-item label="候选经度"><el-input v-model="accountLocation.longitude" /></el-form-item></el-col>
+            </el-row>
+            <el-row>
+              <el-col :xs="24" :sm="8"><el-form-item label="候选省份"><el-input v-model="accountLocation.province" /></el-form-item></el-col>
+              <el-col :xs="24" :sm="8"><el-form-item label="候选城市"><el-input v-model="accountLocation.city" /></el-form-item></el-col>
+              <el-col :xs="24" :sm="8"><el-form-item label="候选区域"><el-input v-model="accountLocation.area" /></el-form-item></el-col>
+            </el-row>
+            <el-button type="warning" :disabled="!canApplyAccountLocation" @click="applyAccountLocation">应用候选位置到打卡设置</el-button>
+          </div>
 
           <el-form-item label="上班打卡">
             <el-time-select v-model="form.clockIn.schedule.startTime" start="00:00" step="00:01" end="23:59" />
           </el-form-item>
           <el-form-item label="下班打卡">
             <el-time-select v-model="form.clockIn.schedule.endTime" start="00:00" step="00:01" end="23:59" />
+          </el-form-item>
+          <el-form-item label="打卡开始日期">
+            <el-date-picker v-model="form.clockIn.schedule.startDate" type="date" value-format="YYYY-MM-DD" placeholder="不设则从当前起算" />
+          </el-form-item>
+          <el-form-item label="打卡结束日期">
+            <el-date-picker v-model="form.clockIn.schedule.endDate" type="date" value-format="YYYY-MM-DD" placeholder="可选，包含结束日" />
+          </el-form-item>
+          <el-form-item label="跳过节假日">
+            <el-switch v-model="form.clockIn.schedule.skipHolidays" active-text="不安排节假日打卡" />
           </el-form-item>
           <el-form-item v-if="isEdit" label="补卡日期">
             <div class="clockin-backfill">
@@ -90,8 +122,11 @@
               <el-checkbox v-for="d in weekdayOptions" :key="d.value" :value="d.value">{{ d.label }}</el-checkbox>
             </el-checkbox-group>
           </el-form-item>
-          <el-form-item label="打卡天数">
-            <el-input-number v-model="form.clockIn.schedule.totalDays" :min="1" :max="3650" />
+          <el-form-item label="有效日历天数">
+            <div class="calendar-days-setting">
+              <el-input-number v-model="form.clockIn.schedule.totalDays" :min="1" :max="3650" />
+              <span>含休息日；与结束日期同时设置时，以较早者为准</span>
+            </div>
           </el-form-item>
           <el-row>
             <el-col :xs="24" :sm="12">
@@ -137,6 +172,9 @@
               <el-checkbox v-for="d in weekdayOptions" :key="d.value" :value="d.value">{{ d.label }}</el-checkbox>
             </el-checkbox-group>
           </el-form-item>
+          <el-form-item label="日报字数范围">
+            <div class="word-range"><el-input-number v-model="form.reportSettings.daily.minWords" :min="1" :max="10000" /> 至 <el-input-number v-model="form.reportSettings.daily.maxWords" :min="1" :max="10000" /> 字（去除空白后计数）</div>
+          </el-form-item>
           <el-form-item label="补交日期">
             <div class="report-backfill">
               <div class="report-backfill-row">
@@ -158,7 +196,7 @@
           <el-form-item label="日报预览">
             <div class="report-preview">
               <div class="report-preview-meta">
-                <div>字数：{{ dailyCount }} / 1000</div>
+                <div>字数：{{ dailyCount }} / {{ form.reportSettings.daily.minWords }}–{{ form.reportSettings.daily.maxWords }}</div>
                 <div class="report-preview-actions">
                   <el-button size="small" :disabled="!isEdit || !isReportEnabled('daily') || !!reportRunLoading || !!reportMakeupAllLoading || !reportTargets.daily" :loading="reportActionLoading === 'daily_generate'" @click="generateReport('daily')">
                     AI生成日报
@@ -197,8 +235,13 @@
           <el-form-item label="启用周报">
             <el-switch v-model="form.reportSettings.weekly.enabled" />
           </el-form-item>
-          <el-form-item label="提交时间(周几)">
-             <el-input-number v-model="form.reportSettings.weekly.submitTime" :min="1" :max="7" />
+          <el-form-item label="提交日(周)">
+            <el-select v-model="form.reportSettings.weekly.submitTime" placeholder="选择周报提交日">
+              <el-option v-for="d in weekdayOptions" :key="d.value" :label="d.label" :value="d.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="周报字数范围">
+            <div class="word-range"><el-input-number v-model="form.reportSettings.weekly.minWords" :min="1" :max="10000" /> 至 <el-input-number v-model="form.reportSettings.weekly.maxWords" :min="1" :max="10000" /> 字（去除空白后计数）</div>
           </el-form-item>
           <el-form-item v-if="form.reportSettings.weekly.enabled" label="提交时刻">
             <el-time-select v-model="form.reportSettings.weekly.submitAt" start="00:00" step="00:01" end="23:59" />
@@ -224,7 +267,7 @@
           <el-form-item label="周报预览">
             <div class="report-preview">
               <div class="report-preview-meta">
-                <div>字数：{{ weeklyCount }} / 1000</div>
+                <div>字数：{{ weeklyCount }} / {{ form.reportSettings.weekly.minWords }}–{{ form.reportSettings.weekly.maxWords }}</div>
                 <div class="report-preview-actions">
                   <el-button size="small" :disabled="!isEdit || !isReportEnabled('weekly') || !!reportRunLoading || !!reportMakeupAllLoading || !reportTargets.weekly" :loading="reportActionLoading === 'weekly_generate'" @click="generateReport('weekly')">
                     AI生成周报
@@ -257,8 +300,14 @@
           <el-form-item label="启用月报">
             <el-switch v-model="form.reportSettings.monthly.enabled" />
           </el-form-item>
-          <el-form-item label="提交时间(号)">
-             <el-input-number v-model="form.reportSettings.monthly.submitTime" :min="1" :max="31" />
+          <el-form-item label="提交日(月)">
+            <el-select v-model="form.reportSettings.monthly.submitTime" placeholder="选择月报提交日">
+              <el-option v-for="day in 31" :key="day" :label="`${day} 号`" :value="day" />
+              <el-option label="月末（最后一天）" value="last" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="月报字数范围">
+            <div class="word-range"><el-input-number v-model="form.reportSettings.monthly.minWords" :min="1" :max="10000" /> 至 <el-input-number v-model="form.reportSettings.monthly.maxWords" :min="1" :max="10000" /> 字（去除空白后计数）</div>
           </el-form-item>
           <el-form-item v-if="form.reportSettings.monthly.enabled" label="提交时刻">
             <el-time-select v-model="form.reportSettings.monthly.submitAt" start="00:00" step="00:01" end="23:59" />
@@ -284,7 +333,7 @@
           <el-form-item label="月报预览">
             <div class="report-preview">
               <div class="report-preview-meta">
-                <div>字数：{{ monthlyCount }} / 1000</div>
+                <div>字数：{{ monthlyCount }} / {{ form.reportSettings.monthly.minWords }}–{{ form.reportSettings.monthly.maxWords }}</div>
                 <div class="report-preview-actions">
                   <el-button size="small" :disabled="!isEdit || !isReportEnabled('monthly') || !!reportRunLoading || !!reportMakeupAllLoading || !reportTargets.monthly" :loading="reportActionLoading === 'monthly_generate'" @click="generateReport('monthly')">
                     AI生成月报
@@ -336,7 +385,7 @@
 
       <el-form-item v-if="!isMobile" class="desktop-actions">
         <div class="form-actions">
-          <el-button type="primary" @click="save">保存</el-button>
+          <el-button type="primary" :loading="schedulePreviewLoading" @click="save">保存</el-button>
           <el-button @click="cancelEdit">取消</el-button>
         </div>
       </el-form-item>
@@ -347,16 +396,29 @@
 
   <div v-if="isMobile" class="mobile-bottom-actions">
     <div class="mobile-bottom-actions-inner">
-      <el-button type="primary" style="flex: 1" @click="save">保存</el-button>
+      <el-button type="primary" style="flex: 1" :loading="schedulePreviewLoading" @click="save">保存</el-button>
       <el-button style="flex: 1" @click="cancelEdit">取消</el-button>
     </div>
   </div>
+
+  <el-dialog v-model="schedulePreviewVisible" title="未来打卡日期预览" width="min(680px, 94vw)" :close-on-click-modal="false">
+    <el-alert :title="`时区：${schedulePreview.timezone || 'Asia/Shanghai'}；共 ${schedulePreview.dates.length} 个执行日期`" type="info" :closable="false" />
+    <p class="preview-rule-note">每周打卡日与节假日排除规则共同过滤；启用跳过节假日时使用中国日历，日历不可用则按周末判断。</p>
+    <p v-if="!schedulePreview.dates.length" class="preview-empty">当前规则没有未来执行日期。仍可确认保存，但请检查日期范围、每周打卡日及节假日设置。</p>
+    <div v-else class="schedule-preview-dates">{{ schedulePreview.dates.join('、') }}</div>
+    <template #footer>
+      <el-button @click="schedulePreviewVisible = false">返回修改</el-button>
+      <el-button type="primary" :loading="saving" @click="confirmScheduleAndSave">确认并保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { http } from '../api/http'
+import { ElMessageBox } from 'element-plus'
+import { countReportWords, validateClockInSchedule, validateReportContent, validateReportWordLimits, resolveSkipHolidays, hasLocationCoordinates, validLocationCoordinates } from '../utils/userRules'
 import { useAuthStore } from '../stores/auth'
 import { parseCnDotAddress, formatCnDotAddress, formatNearbyAddressPlace } from '../utils/cnAddress'
 import { notifySuccess, notifyError, notifyWarning, notifyInfo, resolveErrorMessage } from '../utils/notify'
@@ -374,6 +436,13 @@ const DEFAULT_MAP_DISPLAY_URL = 'https://www.mapchaxun.cn/jingweidu'
 const mapDisplayUrl = String(import.meta.env.VITE_MAP_DISPLAY_URL || DEFAULT_MAP_DISPLAY_URL).trim() || DEFAULT_MAP_DISPLAY_URL
 const isMobile = ref(false)
 const addrFillLoading = ref(false)
+const accountRefreshLoading = ref(false)
+const accountLocation = ref(null)
+const accountLocationMessage = ref('')
+const schedulePreviewVisible = ref(false)
+const schedulePreviewLoading = ref(false)
+const saving = ref(false)
+const schedulePreview = reactive({ dates: [], timezone: 'Asia/Shanghai' })
 const clockInPeriodLoading = ref(false)
 const clockInMakeupLoading = ref(false)
 const clockInMakeupAllLoading = ref(false)
@@ -471,13 +540,9 @@ const flushUiMessage = async () => {
   await new Promise((resolve) => requestAnimationFrame(() => resolve()))
 }
 
-const _countText = (t) => {
-  const s = String(t || '').replace(/\s+/g, '')
-  return Math.min(1000, s.length)
-}
-const dailyCount = computed(() => _countText(reportPreview.daily))
-const weeklyCount = computed(() => _countText(reportPreview.weekly))
-const monthlyCount = computed(() => _countText(reportPreview.monthly))
+const dailyCount = computed(() => countReportWords(reportPreview.daily))
+const weeklyCount = computed(() => countReportWords(reportPreview.weekly))
+const monthlyCount = computed(() => countReportWords(reportPreview.monthly))
 const weekdayOptions = [
   { label: '周一', value: 1 },
   { label: '周二', value: 2 },
@@ -535,13 +600,15 @@ const form = reactive({
       endTime: '18:30',
       weekdays: [1, 2, 3, 4, 5, 6, 7],
       totalDays: 180,
-      startDate: ''
+      startDate: '',
+      endDate: '',
+      skipHolidays: false
     }
   },
   reportSettings: {
-    daily: { enabled: false, imageCount: 0, submitTime: '12:00', submitDays: [1, 2, 3, 4, 5, 6, 7] },
-    weekly: { enabled: true, imageCount: 0, submitTime: 5, submitAt: '18:30' },
-    monthly: { enabled: false, imageCount: 0, submitTime: 29, submitAt: '12:00' }
+    daily: { enabled: false, imageCount: 0, submitTime: '12:00', submitDays: [1, 2, 3, 4, 5, 6, 7], minWords: 1, maxWords: 1000 },
+    weekly: { enabled: false, imageCount: 0, submitTime: 5, submitAt: '18:30', minWords: 1, maxWords: 1000 },
+    monthly: { enabled: false, imageCount: 0, submitTime: 29, submitAt: '12:00', minWords: 1, maxWords: 1000 }
   },
   pushNotifications: buildDefaultPushNotifications(),
   device: "{brand: TA J20, systemVersion: 17, Platform: Android, isPhysicalDevice: true, incremental: K23V10A}"
@@ -719,12 +786,54 @@ const searchPlace = async () => {
     }
 }
 
+const setAccountLocation = (candidate, message = '') => {
+  accountLocation.value = candidate && typeof candidate === 'object' ? {
+    address: String(candidate.address || ''),
+    latitude: candidate.latitude ?? '',
+    longitude: candidate.longitude ?? '',
+    province: String(candidate.province || ''),
+    city: String(candidate.city || ''),
+    area: String(candidate.area || ''),
+    source: String(candidate.source || ''),
+  } : null
+  accountLocationMessage.value = String(message || (accountLocation.value ? '' : '没有可用的账号位置候选'))
+}
+
+const canApplyAccountLocation = computed(() => validLocationCoordinates(accountLocation.value))
+
+const applyAccountLocation = async () => {
+  if (!canApplyAccountLocation.value || !accountLocation.value) {
+    notifyWarning('候选位置缺少有效经纬度，不能应用')
+    return
+  }
+  const hasExistingCoordinates = hasLocationCoordinates(form.clockIn.location)
+  if (hasExistingCoordinates) {
+    try {
+      await ElMessageBox.confirm('打卡设置中已有经纬度。应用候选位置会覆盖现有地址和坐标，是否继续？', '确认覆盖打卡位置', { type: 'warning', confirmButtonText: '覆盖并应用', cancelButtonText: '取消' })
+    } catch {
+      return
+    }
+  }
+  const location = accountLocation.value
+  form.clockIn.location.address = location.address
+  form.clockIn.location.latitude = Number(location.latitude).toFixed(6)
+  form.clockIn.location.longitude = Number(location.longitude).toFixed(6)
+  form.clockIn.location.province = location.province
+  form.clockIn.location.city = location.city
+  form.clockIn.location.area = location.area
+  notifySuccess('候选位置已应用到打卡设置；保存用户后才会持久化')
+}
+
 const fetchUser = async () => {
   if (!isEdit.value) return
   loading.value = true
   try {
     const res = await http.get(`/users/${route.params.id}`)
-    Object.assign(form, res.data)
+    const userData = { ...(res.data || {}) }
+    setAccountLocation(userData.accountLocation, userData.locationMessage)
+    delete userData.accountLocation
+    delete userData.locationMessage
+    Object.assign(form, userData)
     delete form.ai
     const last = res.data?.last_execution_result || []
     if (Array.isArray(last)) {
@@ -735,8 +844,9 @@ const fetchUser = async () => {
     if (!form.clockIn) {
       form.clockIn = {}
     }
+    if (!form.clockIn.location) form.clockIn.location = { address: '', latitude: '', longitude: '', province: '', city: '', area: '' }
     if (!form.clockIn.schedule) {
-      form.clockIn.schedule = { startTime: '08:30', endTime: '18:30', weekdays: [1,2,3,4,5,6,7], totalDays: 180, startDate: '' }
+      form.clockIn.schedule = { startTime: '08:30', endTime: '18:30', weekdays: [1,2,3,4,5,6,7], totalDays: 180, startDate: '', endDate: '', skipHolidays: resolveSkipHolidays(form.clockIn.mode) }
     } else {
       if (!form.clockIn.schedule.startTime) form.clockIn.schedule.startTime = '08:30'
       if (!form.clockIn.schedule.endTime) form.clockIn.schedule.endTime = '18:30'
@@ -745,29 +855,37 @@ const fetchUser = async () => {
       }
       if (!form.clockIn.schedule.totalDays) form.clockIn.schedule.totalDays = 180
       if (!form.clockIn.schedule.startDate) form.clockIn.schedule.startDate = ''
+      if (typeof form.clockIn.schedule.endDate !== 'string') form.clockIn.schedule.endDate = ''
+      form.clockIn.schedule.skipHolidays = resolveSkipHolidays(form.clockIn.mode, form.clockIn.schedule.skipHolidays, form.clockIn.specialClockIn)
     }
     if (!form.reportSettings) {
       form.reportSettings = { daily: {}, weekly: {}, monthly: {} }
     }
     if (!form.reportSettings.daily) {
-      form.reportSettings.daily = { enabled: false, imageCount: 0, submitTime: '12:00', submitDays: [1, 2, 3, 4, 5, 6, 7] }
+      form.reportSettings.daily = { enabled: false, imageCount: 0, submitTime: '12:00', submitDays: [1, 2, 3, 4, 5, 6, 7], minWords: 1, maxWords: 1000 }
     } else {
       if (!form.reportSettings.daily.submitTime) form.reportSettings.daily.submitTime = '12:00'
       if (!Array.isArray(form.reportSettings.daily.submitDays)) {
         form.reportSettings.daily.submitDays = [1, 2, 3, 4, 5, 6, 7]
       }
+      if (form.reportSettings.daily.minWords == null) form.reportSettings.daily.minWords = 1
+      if (form.reportSettings.daily.maxWords == null) form.reportSettings.daily.maxWords = 1000
     }
     if (!form.reportSettings.weekly) {
-      form.reportSettings.weekly = { enabled: true, imageCount: 0, submitTime: 5, submitAt: '18:30' }
+      form.reportSettings.weekly = { enabled: false, imageCount: 0, submitTime: 5, submitAt: '18:30', minWords: 1, maxWords: 1000 }
     } else {
-      if (typeof form.reportSettings.weekly.enabled !== 'boolean') form.reportSettings.weekly.enabled = true
+      if (typeof form.reportSettings.weekly.enabled !== 'boolean') form.reportSettings.weekly.enabled = false
+      if (form.reportSettings.weekly.minWords == null) form.reportSettings.weekly.minWords = 1
+      if (form.reportSettings.weekly.maxWords == null) form.reportSettings.weekly.maxWords = 1000
       if (!form.reportSettings.weekly.submitTime) form.reportSettings.weekly.submitTime = 5
       if (!form.reportSettings.weekly.submitAt) form.reportSettings.weekly.submitAt = '18:30'
     }
     if (!form.reportSettings.monthly) {
-      form.reportSettings.monthly = { enabled: false, imageCount: 0, submitTime: 29, submitAt: '12:00' }
+      form.reportSettings.monthly = { enabled: false, imageCount: 0, submitTime: 29, submitAt: '12:00', minWords: 1, maxWords: 1000 }
     } else {
-      if (!form.reportSettings.monthly.submitTime) form.reportSettings.monthly.submitTime = 29
+      if (form.reportSettings.monthly.minWords == null) form.reportSettings.monthly.minWords = 1
+      if (form.reportSettings.monthly.maxWords == null) form.reportSettings.monthly.maxWords = 1000
+      if (form.reportSettings.monthly.submitTime == null || form.reportSettings.monthly.submitTime === '') form.reportSettings.monthly.submitTime = 29
       if (!form.reportSettings.monthly.submitAt) form.reportSettings.monthly.submitAt = '12:00'
     }
     form.pushNotifications = normalizePushNotifications(form.pushNotifications)
@@ -796,28 +914,72 @@ const resetToDefaultForm = () => {
   activeTab.value = 'basic'
 }
 
+const validateFormBeforePreview = () => {
+  const scheduleMessage = validateClockInSchedule(form.clockIn)
+  if (scheduleMessage) return scheduleMessage
+  for (const key of reportKeys) {
+    const settings = form.reportSettings?.[key] || {}
+    const limits = validateReportWordLimits(settings.minWords ?? 1, settings.maxWords ?? 1000)
+    if (!limits.valid) return `${reportLabelMap[key]}：${limits.message}`
+  }
+  return ''
+}
+
+const persistUserAfterPreview = async () => {
+  form.clockIn.mode = 'custom'
+  form.clockIn.customDays = form.clockIn.schedule.weekdays
+  const payload = JSON.parse(JSON.stringify(form))
+  delete payload.ai
+  delete payload.accountLocation
+  delete payload.locationMessage
+  payload.pushNotifications = normalizePushNotifications(payload.pushNotifications)
+  if (isEdit.value) {
+    await http.patch(`/users/${route.params.id}`, payload)
+  } else {
+    await http.post('/users', payload)
+  }
+  schedulePreviewVisible.value = false
+  notifySuccess('保存成功')
+  if (isEdit.value) {
+    await fetchUser()
+  } else {
+    await router.push('/')
+  }
+}
+
 const save = async () => {
+  if (schedulePreviewLoading.value || saving.value) return
+  const validationMessage = validateFormBeforePreview()
+  if (validationMessage) {
+    notifyWarning(validationMessage)
+    return
+  }
+  schedulePreviewLoading.value = true
   try {
-    notifyInfo(isEdit.value ? '正在保存用户信息' : '正在创建用户')
+    notifyInfo('保存前先预览未来打卡日期')
     await flushUiMessage()
-    form.clockIn.mode = 'custom'
-    form.clockIn.customDays = form.clockIn.schedule.weekdays
-    const payload = JSON.parse(JSON.stringify(form))
-    delete payload.ai
-    payload.pushNotifications = normalizePushNotifications(payload.pushNotifications)
-    if (isEdit.value) {
-      await http.patch(`/users/${route.params.id}`, payload)
-    } else {
-      await http.post('/users', payload)
-    }
-    notifySuccess('保存成功')
-    if (isEdit.value) {
-      fetchUser()
-    } else {
-      await router.push('/')
-    }
+    const clockIn = JSON.parse(JSON.stringify(form.clockIn))
+    const res = await http.post('/schedule/preview', { clockIn })
+    if (!Array.isArray(res.data?.dates)) throw new Error('预览接口未返回 dates 日期列表')
+    schedulePreview.dates = res.data.dates.filter((date) => typeof date === 'string')
+    schedulePreview.timezone = String(res.data.timezone || 'Asia/Shanghai')
+    schedulePreviewVisible.value = true
+  } catch (error) {
+    notifyError(`日期预览失败，未保存：${resolveErrorMessage(error, '请稍后重试')}`)
+  } finally {
+    schedulePreviewLoading.value = false
+  }
+}
+
+const confirmScheduleAndSave = async () => {
+  if (saving.value) return
+  saving.value = true
+  try {
+    await persistUserAfterPreview()
   } catch (error) {
     notifyError(`保存失败：${resolveErrorMessage(error, '请求失败')}`)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -1021,9 +1183,10 @@ const submitReport = async (key) => {
     notifyWarning(`暂无可补交的${label}周期`)
     return
   }
-  const content = String(reportPreview[key] || '').trim()
-  if (!content) {
-    notifyWarning(`请先生成或填写${label}内容`)
+  const content = String(reportPreview[key] || '')
+  const contentValidation = validateReportContent(content, form.reportSettings?.[key] || {})
+  if (!contentValidation.valid) {
+    notifyWarning(contentValidation.count === 0 ? `请先生成或填写${label}内容` : contentValidation.message)
     return
   }
   reportActionLoading.value = `${key}_submit`
@@ -1147,27 +1310,35 @@ const _pickBestAddress = (...values) => {
   return unique[0] || ''
 }
 
-const fillFromAccountAddress = async () => {
-  if (!isEdit.value) {
-    notifyWarning('请先保存用户后再自动填充')
-    return
+const refreshAccountLocation = async () => {
+  if (!isEdit.value) return
+  accountRefreshLoading.value = true
+  try {
+    notifyInfo('正在获取账号信息与上班位置候选（仅查询，不会修改用户）')
+    await flushUiMessage()
+    const res = await http.post(`/users/${route.params.id}/refresh`)
+    setAccountLocation(res.data?.accountLocation, res.data?.locationMessage || (res.data?.ok ? '账号信息已获取；没有提取到可用位置候选' : '未能获取账号信息'))
+    if (accountLocation.value) notifySuccess('账号位置候选已更新；请核对后手动应用')
+    else notifyWarning(accountLocationMessage.value)
+  } catch (e) {
+    notifyError(resolveErrorMessage(e, '获取账号信息失败'))
+  } finally {
+    accountRefreshLoading.value = false
   }
+}
+
+const fillFromAccountAddress = async () => {
+  if (!isEdit.value) return
   addrFillLoading.value = true
   try {
-    notifyInfo('正在读取账号地址并自动填充')
+    notifyInfo('正在读取账号位置候选（不会自动应用）')
     await flushUiMessage()
     const res = await http.get(`/users/${route.params.id}/account-address`)
-    const bestAddr = _pickBestAddress(res.data?.address, res.data?.addressCandidates, res.data?.maskedAddress, res.data?.maskedCandidates)
-    if (!bestAddr) {
-      notifyWarning('未获取到账号详细地址')
-      return
-    }
-    form.clockIn.location.address = bestAddr
-    searchQuery.value = bestAddr
-    await searchPlace()
-    notifySuccess('已填入账号详细地址，并尝试自动定位经纬度')
+    setAccountLocation(res.data?.accountLocation, res.data?.locationMessage || (res.data?.accountLocation ? '' : '账号地址接口未返回可用位置候选'))
+    if (accountLocation.value) notifySuccess('账号位置候选已更新；请核对后手动应用')
+    else notifyWarning(accountLocationMessage.value)
   } catch (e) {
-    notifyError(resolveErrorMessage(e, '自动填充失败'))
+    notifyError(resolveErrorMessage(e, '读取账号地址候选失败'))
   } finally {
     addrFillLoading.value = false
   }
@@ -1231,6 +1402,37 @@ onUnmounted(() => {
 .desktop-actions {
   margin-top: 20px;
 }
+.account-location-alert {
+  margin: 0 0 14px 0;
+}
+.account-location-candidate {
+  margin: 0 0 20px;
+  padding: 14px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+}
+.word-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.schedule-preview-dates {
+  margin-top: 14px;
+  max-height: 45vh;
+  overflow: auto;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.preview-rule-note {
+  margin: 10px 0 0;
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
+}
+.preview-empty {
+  color: var(--el-color-warning);
+  margin: 14px 0 0;
+}
 .map {
   height: 300px;
   margin-bottom: 20px;
@@ -1263,6 +1465,16 @@ onUnmounted(() => {
 }
 .place-actions :deep(.el-button) {
   white-space: nowrap;
+}
+.calendar-days-setting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.calendar-days-setting span {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 .week-group {
   display: flex;

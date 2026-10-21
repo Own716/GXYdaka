@@ -9,7 +9,7 @@ COPY web/ ./web/
 RUN cd web && npm run build
 
 # 阶段 2：构建后端运行环境
-FROM python:3.10-slim@sha256:70f65c721aaddfb22b20ed6ec12606c59d9592493c5fcb6639f3d0e8ba3fbc10
+FROM python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47
 WORKDIR /app
 
 ARG BUILD_DATE=""
