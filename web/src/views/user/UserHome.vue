@@ -264,7 +264,21 @@ loadAll()
 .user-home {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
+  padding-bottom: 12px;
+}
+.user-home :deep(.page-card) {
+  overflow: hidden;
+  border-radius: 18px;
+  border-color: var(--el-border-color-lighter);
+  box-shadow: 0 8px 28px rgba(31, 45, 61, 0.035);
+}
+.user-home :deep(.page-card > .el-card__header) {
+  padding: 20px 22px 12px;
+  border-bottom: 0;
+}
+.user-home :deep(.page-card > .el-card__body) {
+  padding: 10px 22px 22px;
 }
 .panel-header {
   display: flex;
@@ -274,13 +288,15 @@ loadAll()
   flex-wrap: wrap;
 }
 .panel-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
+  letter-spacing: -0.15px;
 }
 .panel-subtitle {
-  margin-top: 4px;
+  margin-top: 5px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 .panel-actions,
 .run-actions,
@@ -295,8 +311,8 @@ loadAll()
   gap: 12px;
 }
 .summary-item {
-  padding: 14px;
-  border-radius: 12px;
+  padding: 16px;
+  border-radius: 14px;
   background: var(--el-fill-color-light);
 }
 .summary-label {
@@ -307,6 +323,8 @@ loadAll()
   margin-top: 8px;
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 .inline-hint {
   margin-top: 10px;
@@ -319,9 +337,10 @@ loadAll()
   gap: 10px;
 }
 .execution-item {
-  padding: 12px 14px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 14px;
+  background: var(--el-bg-color);
 }
 .execution-head {
   display: flex;
@@ -333,10 +352,31 @@ loadAll()
   margin-top: 8px;
   color: var(--el-text-color-regular);
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 @media (max-width: 768px) {
+  .user-home {
+    gap: 14px;
+  }
+  .user-home :deep(.page-card > .el-card__header) {
+    padding: 18px 16px 10px;
+  }
+  .user-home :deep(.page-card > .el-card__body) {
+    padding: 8px 16px 18px;
+  }
   .summary-grid {
     grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .panel-actions,
+  .run-actions,
+  .report-actions {
+    gap: 8px;
+  }
+  .run-actions :deep(.el-button),
+  .report-actions :deep(.el-button) {
+    flex: 1 1 calc(50% - 8px);
+    margin-left: 0;
   }
 }
 </style>

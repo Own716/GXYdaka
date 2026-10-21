@@ -49,9 +49,9 @@ const logout = async () => {
   position: sticky;
   top: 0;
   z-index: 10;
-  border-bottom: 1px solid var(--el-border-color-light);
+  border-bottom: 1px solid color-mix(in srgb, var(--el-border-color-lighter) 72%, transparent);
   background: color-mix(in srgb, var(--el-bg-color) 92%, transparent);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(14px);
 }
 .user-header-main {
   max-width: 1200px;
@@ -64,8 +64,9 @@ const logout = async () => {
   flex-wrap: wrap;
 }
 .user-title {
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 800;
+  letter-spacing: -0.2px;
 }
 .user-subtitle {
   margin-top: 4px;
@@ -74,8 +75,22 @@ const logout = async () => {
 }
 .user-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--el-fill-color-light);
+}
+.user-actions :deep(.el-button) {
+  margin: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.user-actions :deep(.el-button:hover) {
+  background: var(--el-bg-color);
+}
+.user-actions :deep(.el-button--danger) {
+  color: var(--el-color-danger);
 }
 .user-body {
   max-width: 1200px;
@@ -91,9 +106,11 @@ const logout = async () => {
   }
   .user-actions {
     width: 100%;
+    gap: 4px;
   }
   .user-actions :deep(.el-button) {
     flex: 1 1 0;
+    padding-inline: 8px;
   }
 }
 </style>

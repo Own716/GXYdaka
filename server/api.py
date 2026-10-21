@@ -62,6 +62,8 @@ from server.proxy_settings import (
 )
 from server.http_client import safe_external_error_detail
 from server.settings_store import get_setting, upsert_setting
+from server.clockin_photos import MAX_BATCH_BYTES, PhotoError, add_photos, delete_photo, read_photo, response_photos
+from starlette.concurrency import run_in_threadpool
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1786,6 +1788,10 @@ class SchedulePreviewRequest(BaseModel):
 def _validate_user_rules(clock_in=None, report_settings=None):
     try:
         if clock_in is not None:
+            if not isinstance(clock_in, dict):
+                raise ValueError("clockIn 必须为对象")
+            if "photoEnabled" in clock_in and type(clock_in["photoEnabled"]) is not bool:
+                raise ValueError("clockIn.photoEnabled 必须为布尔值")
             validate_clockin_schedule(clock_in)
         if report_settings is not None:
             if not isinstance(report_settings, dict):
@@ -1809,6 +1815,164 @@ def _validate_user_rules(clock_in=None, report_settings=None):
                     validate_clockin_schedule({"schedule": {"weekdays": settings["submitDays"]}})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+MAX_CLOCKIN_PHOTO_REQUEST_BYTES = 32 * 1024 * 1024
+
+
+def _clockin_photo_request_limit() -> int:
+    raw = os.getenv("MAX_CLOCKIN_PHOTO_REQUEST_BYTES")
+    if raw is None or not str(raw).strip():
+        return MAX_CLOCKIN_PHOTO_REQUEST_BYTES
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return MAX_CLOCKIN_PHOTO_REQUEST_BYTES
+    return max(1, min(value, MAX_CLOCKIN_PHOTO_REQUEST_BYTES)) if value > 0 else MAX_CLOCKIN_PHOTO_REQUEST_BYTES
+
+
+async def _parse_clockin_photo_upload(request: Request) -> list[tuple[str, bytes]]:
+    """Bound total body size before Starlette parses and spools multipart files."""
+    max_body_bytes = _clockin_photo_request_limit()
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_body_bytes:
+                raise HTTPException(status_code=413, detail="上传请求体超过限制")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Content-Length 无效") from exc
+    original_receive = request._receive
+    received = 0
+
+    async def limited_receive():
+        nonlocal received
+        message = await original_receive()
+        if message.get("type") == "http.request":
+            received += len(message.get("body", b""))
+            if received > max_body_bytes:
+                raise HTTPException(status_code=413, detail="上传请求体超过限制")
+        return message
+
+    request._receive = limited_receive
+    form = None
+    try:
+        form = await request.form(max_files=20, max_fields=4, max_part_size=64 * 1024)
+        uploads: list[tuple[str, bytes]] = []
+        for _, item in form.multi_items():
+            if not hasattr(item, "read"):
+                continue
+            content = await item.read(10 * 1024 * 1024 + 1)
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="每张图片不得超过10MB")
+            uploads.append((str(getattr(item, "filename", "") or "图片"), content))
+        if not uploads:
+            raise HTTPException(status_code=400, detail="请选择至少一张图片")
+        if sum(len(content) for _, content in uploads) > MAX_BATCH_BYTES:
+            raise HTTPException(status_code=413, detail="单批图片总大小不得超过30MB")
+        return uploads
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="multipart 上传格式无效或文件数超限") from exc
+    finally:
+        if form is not None:
+            await form.close()
+
+
+def _clockin_photo_payload(user: User, app_surface: bool = False) -> dict:
+    settings = user.clockIn if isinstance(user.clockIn, dict) else {}
+    prefix = "/api/app/clock-in/photos" if app_surface else f"/api/users/{user.id}/clock-in/photos"
+    return response_photos(str(user.tenant_id or DEFAULT_TENANT_ID), int(user.id), settings.get("photoEnabled") is True, prefix)
+
+
+def _photo_operation_error(exc: PhotoError) -> HTTPException:
+    status = 413 if "20张" in str(exc) else 400
+    return HTTPException(status_code=status, detail=str(exc))
+
+
+@router.get("/users/{user_id}/clock-in/photos")
+def list_user_clockin_photos(user_id: int, session: Session = Depends(get_session), operator: dict = Depends(require_users_read)):
+    user = _get_active_user_for_payload(session, user_id, operator)
+    return _clockin_photo_payload(user)
+
+
+@router.post("/users/{user_id}/clock-in/photos", openapi_extra={"requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string", "format": "binary"}}}}}}}})
+async def upload_user_clockin_photos(user_id: int, request: Request, session: Session = Depends(get_session), operator: dict = Depends(require_users_write)):
+    user = _get_active_user_for_payload(session, user_id, operator)
+    try:
+        uploads = await _parse_clockin_photo_upload(request)
+        rows = await run_in_threadpool(add_photos, str(user.tenant_id or DEFAULT_TENANT_ID), int(user.id), uploads)
+    except PhotoError as exc:
+        raise _photo_operation_error(exc) from exc
+    result = _clockin_photo_payload(user)
+    result["photos"] = [{**row, "url": f"/api/users/{user.id}/clock-in/photos/{row['id']}"} for row in rows]
+    return result
+
+
+@router.delete("/users/{user_id}/clock-in/photos/{photo_id}")
+def delete_user_clockin_photo(user_id: int, photo_id: str, session: Session = Depends(get_session), operator: dict = Depends(require_users_write)):
+    user = _get_active_user_for_payload(session, user_id, operator)
+    try:
+        rows = delete_photo(str(user.tenant_id or DEFAULT_TENANT_ID), int(user.id), photo_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="照片不存在") from None
+    result = _clockin_photo_payload(user)
+    result["photos"] = [{**row, "url": f"/api/users/{user.id}/clock-in/photos/{row['id']}"} for row in rows]
+    return result
+
+
+@router.get("/users/{user_id}/clock-in/photos/{photo_id}")
+def preview_user_clockin_photo(user_id: int, photo_id: str, session: Session = Depends(get_session), operator: dict = Depends(require_users_read)):
+    user = _get_active_user_for_payload(session, user_id, operator)
+    try:
+        content = read_photo(str(user.tenant_id or DEFAULT_TENANT_ID), int(user.id), photo_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="照片不存在") from None
+    return Response(content, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/app/clock-in/photos")
+def list_app_clockin_photos(session: Session = Depends(get_session), payload: dict = Depends(get_user)):
+    app_user = _get_authed_app_user(session=session, payload=payload)
+    return _clockin_photo_payload(_get_bound_task_user(session=session, app_user=app_user), app_surface=True)
+
+
+@router.post("/app/clock-in/photos", openapi_extra={"requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string", "format": "binary"}}}}}}}})
+async def upload_app_clockin_photos(request: Request, session: Session = Depends(get_session), payload: dict = Depends(get_user)):
+    app_user = _get_authed_app_user(session=session, payload=payload)
+    user = _get_bound_task_user(session=session, app_user=app_user)
+    try:
+        uploads = await _parse_clockin_photo_upload(request)
+        rows = await run_in_threadpool(add_photos, str(user.tenant_id or DEFAULT_TENANT_ID), int(user.id), uploads)
+    except PhotoError as exc:
+        raise _photo_operation_error(exc) from exc
+    result = _clockin_photo_payload(user, app_surface=True)
+    result["photos"] = [{**row, "url": f"/api/app/clock-in/photos/{row['id']}"} for row in rows]
+    return result
+
+
+@router.delete("/app/clock-in/photos/{photo_id}")
+def delete_app_clockin_photo(photo_id: str, session: Session = Depends(get_session), payload: dict = Depends(get_user)):
+    app_user = _get_authed_app_user(session=session, payload=payload)
+    user = _get_bound_task_user(session=session, app_user=app_user)
+    try:
+        rows = delete_photo(str(user.tenant_id or DEFAULT_TENANT_ID), int(user.id), photo_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="照片不存在") from None
+    result = _clockin_photo_payload(user, app_surface=True)
+    result["photos"] = [{**row, "url": f"/api/app/clock-in/photos/{row['id']}"} for row in rows]
+    return result
+
+
+@router.get("/app/clock-in/photos/{photo_id}")
+def preview_app_clockin_photo(photo_id: str, session: Session = Depends(get_session), payload: dict = Depends(get_user)):
+    app_user = _get_authed_app_user(session=session, payload=payload)
+    user = _get_bound_task_user(session=session, app_user=app_user)
+    try:
+        content = read_photo(str(user.tenant_id or DEFAULT_TENANT_ID), int(user.id), photo_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="照片不存在") from None
+    return Response(content, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
 
 
 @router.post("/schedule/preview")

@@ -1,9 +1,24 @@
 import requests
 import time
 import logging
+import posixpath
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _is_valid_image_key(value: object) -> bool:
+    """Accept only a relative, safe object key for the JPEG being uploaded."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    if value.startswith("/") or "\\" in value or "://" in value:
+        return False
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    if posixpath.isabs(value):
+        return False
+    return value.lower().endswith((".jpg", ".jpeg"))
 
 
 def build_upload_key(snowFlakeId: str, userId: str) -> str:
@@ -54,7 +69,7 @@ def upload_image(
         "x-qn-meta-fname": f"{int(time.time() * 1000)}.jpg",
     }
 
-    files = {"file": (key, image_data, "application/octet-stream")}
+    files = {"file": (key, image_data, "image/jpeg")}
 
     for attempt in range(max_retries):
         try:
@@ -68,11 +83,25 @@ def upload_image(
             response.raise_for_status()
 
             response_data = response.json()
-            if "key" in response_data:
-                return response_data["key"].replace("upload/", "")
-            else:
-                logger.warning("上传成功，但响应中没有key字段")
+            if not isinstance(response_data, dict):
+                logger.warning("上传响应不是有效JSON对象")
                 return None
+            if response_data.get("error"):
+                logger.warning("上传业务失败: %s", response_data.get("error"))
+                return None
+            if ("code" in response_data and response_data["code"] not in (0, 200, "0", "200")) or response_data.get("success") is False:
+                logger.warning("上传响应包含失败的业务状态")
+                return None
+            returned_key = response_data.get("key")
+            if not _is_valid_image_key(returned_key):
+                logger.warning("上传响应中的key不是有效图片对象路径")
+                return None
+            # Preserve the established attachment contract by removing only
+            # a leading upload/ prefix, not matching it elsewhere in the key.
+            return returned_key[len("upload/"):] if returned_key.startswith("upload/") else returned_key
+        except ValueError as e:
+            logger.warning("上传响应JSON无效: %s", e)
+            return None
         except requests.exceptions.RequestException as e:
             logger.warning(f"上传失败 (尝试 {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
@@ -102,6 +131,14 @@ def upload(
     Returns:
         str: 成功上传的图片链接，用逗号分隔。
     """
+    for field_name, field_value in (
+        ("token", token),
+        ("snowFlakeId", snowFlakeId),
+        ("userId", userId),
+    ):
+        valid_type = isinstance(field_value, str) if field_name == "token" else isinstance(field_value, (str, int)) and not isinstance(field_value, bool)
+        if not valid_type or not str(field_value).strip():
+            raise ValueError(f"上传图片失败：{field_name}不能为空")
     url = "https://up.qiniup.com/"
     headers = {
         "host": "up.qiniup.com",

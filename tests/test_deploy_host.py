@@ -140,6 +140,74 @@ class DeployHostTests(unittest.TestCase):
             self.assertEqual(0o700, (base / "logs").stat().st_mode & 0o777)
             self.assertEqual(0o600, log_path.stat().st_mode & 0o777)
 
+    def test_runtime_images_persist_across_releases_and_idempotent_linking(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            legacy = root / "legacy"
+            images = legacy / "server" / "images"
+            images.mkdir(parents=True)
+            photo = images / "existing.jpg"
+            photo.write_bytes(b"existing user photo")
+            runtime_env = root / "production.env"
+            runtime_env.touch()
+            config = dict(deploy_host.DEFAULTS, legacy_dir=str(legacy), runtime_env_file=str(runtime_env))
+            for name in ("release-a", "release-b"):
+                release = root / name
+                (release / "server" / "images").mkdir(parents=True)
+                deploy_host.install_runtime_links(release, config)
+                deploy_host.install_runtime_links(release, config)
+                self.assertTrue((release / "server" / "images").is_symlink())
+                self.assertEqual(images.resolve(), (release / "server" / "images").resolve())
+                self.assertEqual(b"existing user photo", photo.read_bytes())
+
+    def test_runtime_images_never_overwrite_populated_candidate_or_wrong_symlink(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            release = root / "release"
+            images = release / "server" / "images"
+            images.mkdir(parents=True)
+            photo = images / "do-not-delete.jpg"
+            photo.write_bytes(b"must survive")
+            runtime_env = root / "production.env"
+            runtime_env.touch()
+            config = dict(deploy_host.DEFAULTS, legacy_dir=str(root / "legacy"), runtime_env_file=str(runtime_env))
+            with self.assertRaisesRegex(deploy_host.DeployError, "refusing replacement"):
+                deploy_host.install_runtime_links(release, config)
+            self.assertEqual(b"must survive", photo.read_bytes())
+            photo.unlink()
+            images.rmdir()
+            other = root / "other"
+            other.mkdir()
+            images.symlink_to(other)
+            with self.assertRaisesRegex(deploy_host.DeployError, "somewhere unexpected"):
+                deploy_host.install_runtime_links(release, config)
+            self.assertEqual(other, images.resolve())
+
+    def test_validation_detaches_production_images_before_candidate_tests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            release = root / "release"
+            (release / "web").mkdir(parents=True)
+            (release / "server").mkdir()
+            shared = root / "legacy" / "server" / "images"
+            shared.mkdir(parents=True)
+            photo = shared / "private.jpg"
+            photo.write_bytes(b"private photo")
+            link = release / "server" / "images"
+            link.symlink_to(shared)
+            test_env = root / "test-env.json"
+            test_env.write_text(json.dumps({"DATABASE_URL": "mysql+pymysql://test:unused@127.0.0.1:1/test"}))
+            config = dict(deploy_host.DEFAULTS, base_dir=str(root / "base"), legacy_dir=str(root / "legacy"), test_env_file=str(test_env))
+
+            def check(_args, **_kwargs):
+                self.assertFalse(link.is_symlink())
+                self.assertFalse(link.exists())
+
+            with patch.object(deploy_host, "run_checked", side_effect=check) as run:
+                deploy_host.validate_release(release, root / "python", config)
+            self.assertEqual(6, run.call_count)
+            self.assertEqual(b"private photo", photo.read_bytes())
+
     def test_validation_rejects_unexpected_env_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

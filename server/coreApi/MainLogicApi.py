@@ -1019,6 +1019,8 @@ class ApiClient:
         if not isinstance(location2, dict):
             location2 = {}
         data.update(location2)
+        # Location metadata must never overwrite the uploaded photo attachment.
+        data["attachments"] = checkin_info.get("attachments")
 
         headers = self._get_authenticated_headers(sign_data)
         if replace and self.config.get_value("userInfo.userType") != "teacher":
@@ -1035,6 +1037,9 @@ class ApiClient:
             return {"status": "verification_required"}
         if response.get("code") != 200:
             raise ValueError(str(response.get("msg") or "打卡失败"))
+        message = str(response.get("msg") or "").strip()
+        if message.lower() not in {"", "success", "ok", "成功", "操作成功", "打卡成功", "补卡成功", "提交成功"}:
+            raise ValueError(message or "平台未确认打卡成功")
         return {"status": "success"}
 
     def submit_clock_in(self, checkin_info: Dict[str, Any]) -> Dict[str, str]:

@@ -198,6 +198,8 @@ def user_to_config(
 
     return {
         "tenant_id": getattr(user, "tenant_id", DEFAULT_TENANT_ID),
+        # These IDs come from the persisted User row, never from editable clockIn settings.
+        "user_id": getattr(user, "id", None),
         "config": {
             "user": {"phone": getattr(user, "phone", ""), "password": password},
             "clockIn": _json_copy(getattr(user, "clockIn", {}) or {}),

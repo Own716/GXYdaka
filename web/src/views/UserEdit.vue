@@ -56,6 +56,12 @@
         </el-tab-pane>
 
         <el-tab-pane label="打卡设置" name="clockin">
+          <ClockInPhotos
+            v-model="form.clockIn.photoEnabled"
+            :endpoint="isEdit ? `/users/${route.params.id}/clock-in/photos` : ''"
+            :client="http"
+            :disabled="loading || saving"
+          />
           <el-alert title="搜索地址可自动获取经纬度和地址，也可在经纬度查询页手动核对" type="info" :closable="false" style="margin-bottom: 15px;" />
           
           <el-form-item label="详细地址">
@@ -441,6 +447,7 @@ import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from
 import { useRoute, useRouter } from 'vue-router'
 import { http } from '../api/http'
 import { ElMessageBox } from 'element-plus'
+import ClockInPhotos from '../components/ClockInPhotos.vue'
 import { countReportWords, validateClockInSchedule, validateReportContent, validateReportWordLimits, resolveSkipHolidays, hasLocationCoordinates, validLocationCoordinates } from '../utils/userRules'
 import { canApplyPrefillLocation, credentialsMatch, hasAddressAndCoordinates, hasLocationValues, normalizeAccountInfo } from '../utils/accountPrefill'
 import { useAuthStore } from '../stores/auth'

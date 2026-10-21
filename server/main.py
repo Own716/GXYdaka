@@ -114,6 +114,24 @@ def _request_body_too_large(request: Request, limit: int) -> bool:
         return False
 
 
+def _request_body_limit_for_request(request: Request) -> int:
+    path = (getattr(getattr(request, "url", None), "path", "") or "").rstrip("/")
+    is_photo_upload = (
+        (path.startswith("/api/users/") and path.endswith("/clock-in/photos") and path.count("/") == 5)
+        or path == "/api/app/clock-in/photos"
+    ) and (getattr(request, "method", "") or "").upper() == "POST"
+    if not is_photo_upload:
+        return _max_request_body_bytes()
+    raw = os.getenv("MAX_CLOCKIN_PHOTO_REQUEST_BYTES")
+    if raw is not None and str(raw).strip():
+        try:
+            configured = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return 32 * 1024 * 1024
+        return max(1, min(configured, 32 * 1024 * 1024)) if configured > 0 else 32 * 1024 * 1024
+    return 32 * 1024 * 1024
+
+
 async def _cache_request_body_with_limit(request: Request, limit: int) -> bool:
     if limit <= 0:
         return False
@@ -164,7 +182,7 @@ async def _security_headers(request, call_next):
     path = request.url.path or "/"
     with request_context(request.headers.get("x-request-id")) as request_id:
         try:
-            max_body_bytes = _max_request_body_bytes()
+            max_body_bytes = _request_body_limit_for_request(request)
             if await _cache_request_body_with_limit(request, max_body_bytes):
                 resp = JSONResponse(status_code=413, content={"detail": "Request body too large"})
                 status_code = int(resp.status_code or 0)

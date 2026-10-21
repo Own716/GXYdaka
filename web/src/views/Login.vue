@@ -79,10 +79,28 @@ const submit = async () => {
 }
 .login-card-wrap {
   width: 100%;
-  max-width: 420px;
+  max-width: 440px;
 }
 .login-card {
   width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 20px;
+  box-shadow: 0 24px 64px rgba(31, 45, 61, 0.1);
+}
+.login-card :deep(.el-card__header) {
+  padding: 28px 30px 18px;
+  border-bottom: 0;
+}
+.login-card :deep(.el-card__body) {
+  padding: 8px 30px 30px;
+}
+.login-card :deep(.el-form-item) {
+  margin-bottom: 20px;
+}
+.login-card :deep(.el-form-item__label) {
+  color: var(--el-text-color-regular);
+  font-weight: 600;
 }
 .login-header {
   display: flex;
@@ -90,12 +108,13 @@ const submit = async () => {
   gap: 2px;
 }
 .login-title {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 800;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.1px;
 }
 .login-subtitle {
-  font-size: 12px;
+  margin-top: 3px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
 }
 :global(html.dark) .login-page {
@@ -104,5 +123,19 @@ const submit = async () => {
     radial-gradient(900px 360px at 80% 0%, rgba(103, 194, 58, 0.12), transparent 55%),
     radial-gradient(600px 300px at 50% 100%, rgba(230, 162, 60, 0.12), transparent 60%),
     var(--el-bg-color-page);
+}
+@media (max-width: 520px) {
+  .login-page {
+    padding: 18px;
+  }
+  .login-card {
+    border-radius: 16px;
+  }
+  .login-card :deep(.el-card__header) {
+    padding: 24px 22px 14px;
+  }
+  .login-card :deep(.el-card__body) {
+    padding: 8px 22px 24px;
+  }
 }
 </style>

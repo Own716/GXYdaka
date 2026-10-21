@@ -249,6 +249,14 @@ def validate_release(release: Path, python: Path, config: dict[str, str]) -> Non
     elif env_link.exists():
         raise DeployError("release contains an unexpected .env path")
 
+    # A retried candidate must not expose production photos during its tests.
+    release_images = release / "server" / "images"
+    if release_images.is_symlink():
+        shared_images = Path(config["legacy_dir"]) / "server" / "images"
+        if release_images.resolve() != shared_images.resolve():
+            raise DeployError("release images symlink points somewhere unexpected")
+        release_images.unlink()
+
     env = test_environment(Path(config["test_env_file"]))
     base = Path(config["base_dir"])
     logs = base / "logs"
@@ -339,6 +347,23 @@ def install_runtime_links(release: Path, config: dict[str, str]) -> None:
             raise DeployError("release .env already exists and is not the configured runtime symlink")
     else:
         env_link.symlink_to(runtime_env)
+
+    # Both API and worker releases share the existing runtime image directory.
+    # Never replace populated candidate directories or copy/delete user photos.
+    shared_images = Path(config["legacy_dir"]) / "server" / "images"
+    release_images = release / "server" / "images"
+    if release_images.is_symlink():
+        if release_images.resolve() != shared_images.resolve():
+            raise DeployError("release images symlink points somewhere unexpected")
+    else:
+        if release_images.exists():
+            if not release_images.is_dir() or any(release_images.iterdir()):
+                raise DeployError("release images contains unexpected files; refusing replacement")
+            release_images.rmdir()
+        shared_images.mkdir(parents=True, exist_ok=True, mode=0o700)
+        release_images.parent.mkdir(parents=True, exist_ok=True)
+        release_images.symlink_to(shared_images, target_is_directory=True)
+
     legacy_models = Path(config["legacy_dir"]) / "server" / "models_onnx"
     release_models = release / "server" / "models_onnx"
     if legacy_models.exists():

@@ -30,6 +30,8 @@ from server.user_runtime import (
 )
 from server.util.HelperFunctions import desensitize_name, is_holiday
 from server.util.FileUploader import upload_img
+from server.clockin_photos import PhotoError, choose_photo_bytes
+from server.coreApi.FileUploadApi import upload as upload_image_bytes
 from server.util.LoggerContext import _log_ctx
 from sqlmodel import Session
 
@@ -403,17 +405,51 @@ def perform_clock_in(
         user_name = desensitize_name(config.get_value("userInfo.nikeName"))
         logger.info(f"用户 {user_name} 开始 {display_type} 打卡")
 
-        # 打卡图片和备注
-        img_count = config.get_value("config.clockIn.imageCount")
-        if not isinstance(img_count, int) or img_count < 0:
-            img_count = 1
-            
-        attachments = upload_img(
-            api_client.get_upload_token(),
-            config.get_value("userInfo.orgJson.snowFlakeId"),
-            config.get_value("userInfo.userId"),
-            img_count,
-        )
+        # Opt-in user photo collection takes precedence; otherwise preserve the legacy gallery/imageCount path.
+        clock_in_settings = config.get_value("config.clockIn") or {}
+        photo_enabled = isinstance(clock_in_settings, dict) and clock_in_settings.get("photoEnabled") is True
+        if photo_enabled:
+            tenant_id = config.get_value("tenant_id")
+            persisted_user_id = config.get_value("user_id")
+            if tenant_id is None or isinstance(persisted_user_id, bool) or not isinstance(persisted_user_id, int):
+                return {
+                    "status": "fail",
+                    "message": "启用了打卡照片，但无法确认持久化用户身份",
+                    "task_type": "打卡",
+                    "details": {"打卡类型": display_type},
+                }
+            try:
+                selected_photo = choose_photo_bytes(str(tenant_id), persisted_user_id)
+            except PhotoError as exc:
+                return {"status": "fail", "message": str(exc), "task_type": "打卡", "details": {"打卡类型": display_type}}
+            try:
+                attachments = upload_image_bytes(
+                    api_client.get_upload_token(),
+                    config.get_value("userInfo.orgJson.snowFlakeId"),
+                    config.get_value("userInfo.userId"),
+                    [selected_photo],
+                )
+            except Exception as exc:
+                logger.warning("打卡照片远端上传失败: %s", exc)
+                attachments = ""
+            if not isinstance(attachments, str) or not attachments.strip() or len(attachments.split(",")) != 1:
+                return {
+                    "status": "fail",
+                    "message": "打卡照片上传失败，未提交打卡",
+                    "task_type": "打卡",
+                    "details": {"打卡类型": display_type},
+                }
+            attachments = attachments.strip()
+        else:
+            img_count = config.get_value("config.clockIn.imageCount")
+            if not isinstance(img_count, int) or img_count < 0:
+                img_count = 1
+            attachments = upload_img(
+                api_client.get_upload_token(),
+                config.get_value("userInfo.orgJson.snowFlakeId"),
+                config.get_value("userInfo.userId"),
+                img_count,
+            )
 
         description_list = config.get_value("config.clockIn.description")
         description = random.choice(description_list) if description_list else None
@@ -458,12 +494,10 @@ def perform_clock_in(
                 retry_info = dict(checkin_info)
                 retry_info["outRegisterNo"] = claim.out_register_no
                 submit_result = submit(retry_info)
-                if not (
+                if (
                     isinstance(submit_result, dict)
                     and submit_result.get("status") == "verification_required"
                 ):
-                    submit_result = {"status": "success"}
-                else:
                     preauthorization_hooks.require_reauthorization(claim.id)
 
         if (
@@ -489,6 +523,9 @@ def perform_clock_in(
                 "task_type": "打卡",
                 "details": details,
             }
+        if not isinstance(submit_result, dict) or submit_result.get("status") != "success":
+            reason = submit_result.get("message") or submit_result.get("msg") if isinstance(submit_result, dict) else None
+            raise ValueError(str(reason or "平台未确认打卡成功，本次未记录为成功"))
         logger.info(f"用户 {user_name} {display_type} 打卡成功")
 
         return {
@@ -513,6 +550,8 @@ def perform_clock_in(
             tips.append("请先获取并保存 planId（非教师账号需要）")
         if "token" in err or "Token" in err:
             tips.append("账号 token 失效时会自动重登；如持续失败请检查账号/密码")
+        if "学校设置必须上传图片" in err or ("图片" in err and "必须上传" in err):
+            tips.append("学校要求打卡照片：请在“打卡照片”上传至少一张图片，开启“随机提交”并保存配置；已开启时请检查照片上传结果。仅上传但未开启开关不会附图")
         details = {
             "姓名": config.get_value("userInfo.nikeName"),
             "打卡时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

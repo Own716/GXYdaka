@@ -428,6 +428,119 @@
         "tags": []
       }
     },
+    "/api/app/clock-in/photos": {
+      "get": {
+        "operation_id": "list_app_clockin_photos_api_app_clock_in_photos_get",
+        "parameters": [],
+        "request_body": {
+          "content": {},
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "tags": []
+      },
+      "post": {
+        "operation_id": "upload_app_clockin_photos_api_app_clock_in_photos_post",
+        "parameters": [],
+        "request_body": {
+          "content": {
+            "multipart/form-data": {
+              "properties": {
+                "files": {
+                  "items": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "tags": []
+      }
+    },
+    "/api/app/clock-in/photos/{photo_id}": {
+      "delete": {
+        "operation_id": "delete_app_clockin_photo_api_app_clock_in_photos__photo_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "content": {},
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      },
+      "get": {
+        "operation_id": "preview_app_clockin_photo_api_app_clock_in_photos__photo_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "content": {},
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      }
+    },
     "/api/app/clock-in/preauthorizations": {
       "get": {
         "operation_id": "app_clockin_preauthorizations_api_app_clock_in_preauthorizations_get",
@@ -1951,6 +2064,167 @@
       "get": {
         "operation_id": "read_user_clockin_missing_days_api_users__user_id__clock_in_missing_days_get",
         "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "request_body": {
+          "content": {},
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      }
+    },
+    "/api/users/{user_id}/clock-in/photos": {
+      "get": {
+        "operation_id": "list_user_clockin_photos_api_users__user_id__clock_in_photos_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "request_body": {
+          "content": {},
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      },
+      "post": {
+        "operation_id": "upload_user_clockin_photos_api_users__user_id__clock_in_photos_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "request_body": {
+          "content": {
+            "multipart/form-data": {
+              "properties": {
+                "files": {
+                  "items": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      }
+    },
+    "/api/users/{user_id}/clock-in/photos/{photo_id}": {
+      "delete": {
+        "operation_id": "delete_user_clockin_photo_api_users__user_id__clock_in_photos__photo_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "request_body": {
+          "content": {},
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      },
+      "get": {
+        "operation_id": "preview_user_clockin_photo_api_users__user_id__clock_in_photos__photo_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "user_id",

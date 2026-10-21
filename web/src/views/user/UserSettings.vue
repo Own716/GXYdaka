@@ -47,6 +47,12 @@
         <el-form-item label="启用打卡">
           <el-switch v-model="clockInEnabled" />
         </el-form-item>
+        <ClockInPhotos
+          v-model="photoEnabled"
+          :endpoint="bound ? '/app/clock-in/photos' : ''"
+          :client="userHttp"
+          :disabled="loading || saving || !bound"
+        />
         <el-form-item label="打卡地址">
           <div class="address-row">
             <el-input v-model="clockInAddress" placeholder="请输入详细地址或搜索关键词" @keyup.enter="searchPlace" />
@@ -267,6 +273,7 @@
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { userHttp } from '../../api/userHttp'
+import ClockInPhotos from '../../components/ClockInPhotos.vue'
 import { notifySuccess, notifyError, notifyWarning, notifyInfo, resolveErrorMessage } from '../../utils/notify'
 
 const router = useRouter()
@@ -281,6 +288,7 @@ const binding = ref(false)
 
 const password = ref('')
 const clockInEnabled = ref(true)
+const photoEnabled = ref(false)
 const clockInAddress = ref('')
 const addressLoading = ref(false)
 const clockInLatitude = ref('')
@@ -554,6 +562,7 @@ const load = async () => {
     const loc = _ensureObj(ci.location)
     const schedule = _ensureObj(ci.schedule)
     clockInEnabled.value = me.value.enable_clockin !== false
+    photoEnabled.value = ci.photoEnabled === true
     clockInAddress.value = String(loc.address || '')
     clockInLatitude.value = String(loc.latitude || '')
     clockInLongitude.value = String(loc.longitude || '')
@@ -593,6 +602,9 @@ const save = async () => {
   schedule.endTime = String(endTime.value || '18:00')
   clockIn.location = location
   clockIn.schedule = schedule
+
+  // 保留未操作开关的旧配置缺省状态，上传照片不自动启用提交。
+  if (photoEnabled.value || Object.hasOwn(clockIn, 'photoEnabled')) clockIn.photoEnabled = photoEnabled.value
 
   const reportSettings = _ensureObj(me.value.reportSettings)
   reportSettings.daily = {

@@ -143,9 +143,12 @@ body {
   margin: 0;
   background-color: var(--el-bg-color-page);
   color: var(--el-text-color-primary);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 .el-card {
   border-radius: 12px;
+  border-color: var(--el-border-color-lighter);
 }
 .el-card__header {
   padding: 14px 16px;
@@ -285,6 +288,39 @@ body {
 .drawer-footer {
   margin-top: auto;
   padding-bottom: env(safe-area-inset-bottom);
+}
+.el-button {
+  border-radius: 9px;
+  font-weight: 500;
+  transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+.el-button:not(.is-disabled):active {
+  transform: translateY(1px);
+}
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: 10px;
+}
+.el-input__wrapper,
+.el-select__wrapper {
+  box-shadow: 0 0 0 1px var(--el-border-color-light) inset;
+}
+.el-card {
+  box-shadow: 0 8px 28px rgba(31, 45, 61, 0.035);
+}
+.el-table {
+  --el-table-border-color: var(--el-border-color-lighter);
+  --el-table-header-bg-color: var(--el-fill-color-light);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.el-dialog,
+.el-message-box {
+  border-radius: 16px;
+}
+.el-tag {
+  border-radius: 999px;
 }
 @media (max-width: 768px) {
   .el-main {
