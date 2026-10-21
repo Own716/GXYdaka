@@ -6,6 +6,7 @@ from server.batch_jobs import get_batch_job_item_status_counts
 from server.models import DEFAULT_TENANT_ID, User, UserCreate, UserRead, UserUpdate, UserListRead, AuditLog, BatchJob, BatchJobItem, AdminUser, AppUser, SystemSetting, ClockInPreauthorization
 from server.scheduler import add_user_job, remove_user_job, user_to_config
 from server.account_location import saved_account_location, latest_start_location, account_location_payload
+from server.account_prefill import build_profile, job_location
 from server.schedule_rules import validate_clockin_schedule, preview_clockin_dates
 from server.report_rules import validate_report_settings, validate_report_content
 from server.task_runner import perform_clock_in, perform_clock_in_makeup, perform_clock_in_makeup_many, run_task_by_config
@@ -39,7 +40,7 @@ import hashlib
 import json
 import logging
 import requests
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from urllib.parse import urljoin
 import time
 import os
@@ -1704,6 +1705,78 @@ def _read_account_location(user: User) -> Dict[str, Any]:
             "addressCandidates": [address] if address else [],
             "maskedAddress": _mask_address(address),
             "maskedCandidates": [_mask_address(address)] if address else []}
+
+
+class AccountInfoRequest(BaseModel):
+    # Bounds are checked in the handler so validation errors never echo a real
+    # password, including when another credential is missing or too long.
+    phone: Any = None
+    password: Optional[SecretStr] = None
+
+
+class AccountInfoResponse(BaseModel):
+    ok: bool
+    profile: Dict[str, str]
+    accountLocation: Optional[Dict[str, Any]] = None
+    ready: bool
+    warnings: List[str]
+    locationMessage: str
+
+
+def _complete_account_location(candidate) -> bool:
+    return bool(candidate and candidate.get("address")
+                and candidate.get("latitude") is not None
+                and candidate.get("longitude") is not None)
+
+
+@router.post("/users/account-info", response_model=AccountInfoResponse)
+def preview_new_account_info(*, request: Request, req: AccountInfoRequest,
+                             operator: dict = Depends(require_users_write)):
+    """Read a remote account into a create-form preview, never a local User."""
+    phone = req.phone.strip() if isinstance(req.phone, str) else ""
+    password = req.password.get_secret_value() if req.password is not None else ""
+    if not 4 <= len(phone) <= 64 or not password.strip() or len(password) > 256:
+        raise HTTPException(status_code=400, detail="请填写有效的工学云账号和密码")
+    tenant_id = tenant_id_from_payload(operator)
+    actor = str(operator.get("sub") or "admin")
+    _rate_limit(f"account_info:{tenant_id}:{actor}:{get_client_ip(request)}", limit=3, per_seconds=60)
+    phone_key = hashlib.sha256(phone.encode()).hexdigest()[:20]
+    _rate_limit(f"account_info_phone:{tenant_id}:{phone_key}", limit=3, per_seconds=60)
+    config = ConfigManager(config={"tenant_id": tenant_id,
+        "config": {"user": {"phone": phone, "password": password}},
+        "userInfo": {}, "planInfo": {}})
+    try:
+        client = ApiClient(config)
+        _ensure_remote_runtime(client, config)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="获取账号信息失败，请核对账号密码或稍后重试") from exc
+    user_info = config.config.get("userInfo") or {}
+    plan_info = config.config.get("planInfo") or {}
+    warnings = []
+    job_info = {}
+    if isinstance(plan_info, dict) and plan_info.get("planId"):
+        try:
+            job_info = client.get_job_info()
+        except Exception:
+            warnings.append("企业/岗位资料暂时无法读取，已保留可获取的账号信息")
+    candidate = saved_account_location(user_info, plan_info)
+    if not _complete_account_location(candidate):
+        try:
+            recent = latest_start_location(client.get_checkin_records())
+            if _complete_account_location(recent) or candidate is None:
+                candidate = recent or candidate
+        except Exception:
+            warnings.append("上班打卡记录暂时无法读取，已继续检查岗位位置")
+    if not _complete_account_location(candidate):
+        position = job_location(job_info)
+        if _complete_account_location(position) or candidate is None:
+            candidate = position or candidate
+    ready = _complete_account_location(candidate)
+    if not ready:
+        warnings.append("平台未返回完整打卡地址和经纬度，未填入猜测坐标；请稍后重试或在打卡设置中补全")
+    return {"ok": True, "profile": build_profile(user_info, plan_info, job_info),
+            "accountLocation": candidate, "ready": ready, "warnings": warnings,
+            "locationMessage": "账号资料和打卡位置已准备好，自动填入后核对并保存即可" if ready else "账号资料已读取，但打卡位置尚不完整"}
 
 
 class SchedulePreviewRequest(BaseModel):

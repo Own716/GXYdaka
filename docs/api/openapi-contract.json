@@ -1567,6 +1567,37 @@
         "tags": []
       }
     },
+    "/api/users/account-info": {
+      "post": {
+        "operation_id": "preview_new_account_info_api_users_account_info_post",
+        "parameters": [],
+        "request_body": {
+          "content": {
+            "application/json": {
+              "$ref": "#/components/schemas/AccountInfoRequest"
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/AccountInfoResponse"
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "tags": []
+      }
+    },
     "/api/users/page": {
       "get": {
         "operation_id": "read_users_page_api_users_page_get",
@@ -2608,6 +2639,63 @@
     }
   },
   "schemas": {
+    "AccountInfoRequest": {
+      "properties": {
+        "password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phone": {}
+      },
+      "type": "object"
+    },
+    "AccountInfoResponse": {
+      "properties": {
+        "accountLocation": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "locationMessage": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "profile": {
+          "type": "object"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "locationMessage",
+        "ok",
+        "profile",
+        "ready",
+        "warnings"
+      ],
+      "type": "object"
+    },
     "AdminUserCreateRequest": {
       "properties": {
         "password": {

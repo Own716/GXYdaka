@@ -22,8 +22,31 @@
             <el-input v-model="form.phone" placeholder="请输入工学云账号" />
           </el-form-item>
           <el-form-item label="密码">
-            <el-input v-model="form.password" :placeholder="passwordPlaceholder" />
+            <el-input v-model="form.password" type="password" show-password autocomplete="new-password" :placeholder="passwordPlaceholder" />
           </el-form-item>
+          <el-form-item v-if="!isEdit" label="账号信息">
+            <div class="account-prefill-controls">
+              <el-button type="primary" :disabled="!form.phone.trim() || !form.password.trim() || accountInfoLoading" :loading="accountInfoLoading" @click="fetchNewAccountInfo">获取账号信息</el-button>
+              <span class="account-prefill-hint">{{ accountInfoFetched && !accountInfoReady ? '位置未完整：启用自动打卡需补全有效地址和经纬度，或关闭自动打卡' : '获取后核对摘要即可保存，其余选项使用默认值' }}</span>
+            </div>
+          </el-form-item>
+          <el-alert
+            v-if="!isEdit && (accountInfoProfile || accountInfoState === 'expired')"
+            :title="accountInfoState === 'expired' ? '账号凭据已变更，之前获取的信息已过期' : `账号信息摘要 · ${accountInfoReady ? '位置已完整读取' : '位置未完整读取'}`"
+            :description="accountInfoSummary"
+            :type="accountInfoState === 'expired' ? 'warning' : (accountInfoReady ? 'success' : 'info')"
+            :closable="false"
+            show-icon
+            class="account-prefill-summary"
+          />
+          <el-alert
+            v-if="!isEdit && accountInfoWarnings.length"
+            :title="accountInfoWarnings.join('；')"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="account-prefill-summary"
+          />
           <el-form-item label="备注">
             <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="例如：张三/研发部/某项目（支持搜索）" />
           </el-form-item>
@@ -419,6 +442,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { http } from '../api/http'
 import { ElMessageBox } from 'element-plus'
 import { countReportWords, validateClockInSchedule, validateReportContent, validateReportWordLimits, resolveSkipHolidays, hasLocationCoordinates, validLocationCoordinates } from '../utils/userRules'
+import { canApplyPrefillLocation, credentialsMatch, hasAddressAndCoordinates, hasLocationValues, normalizeAccountInfo } from '../utils/accountPrefill'
 import { useAuthStore } from '../stores/auth'
 import { parseCnDotAddress, formatCnDotAddress, formatNearbyAddressPlace } from '../utils/cnAddress'
 import { notifySuccess, notifyError, notifyWarning, notifyInfo, resolveErrorMessage } from '../utils/notify'
@@ -437,6 +461,15 @@ const mapDisplayUrl = String(import.meta.env.VITE_MAP_DISPLAY_URL || DEFAULT_MAP
 const isMobile = ref(false)
 const addrFillLoading = ref(false)
 const accountRefreshLoading = ref(false)
+const accountInfoLoading = ref(false)
+const accountInfoProfile = ref(null)
+const accountInfoReady = ref(false)
+const accountInfoWarnings = ref([])
+const accountInfoState = ref('idle')
+const accountInfoFetched = ref(false)
+const accountInfoAutoApplied = ref(false)
+const accountInfoSummary = ref('')
+let accountInfoNonce = 0
 const accountLocation = ref(null)
 const accountLocationMessage = ref('')
 const schedulePreviewVisible = ref(false)
@@ -799,6 +832,81 @@ const setAccountLocation = (candidate, message = '') => {
   accountLocationMessage.value = String(message || (accountLocation.value ? '' : '没有可用的账号位置候选'))
 }
 
+const fetchNewAccountInfo = async () => {
+  if (isEdit.value || accountInfoLoading.value || !form.phone.trim() || !form.password.trim()) return
+  const captured = { phone: form.phone, password: form.password }
+  const phone = form.phone.trim()
+  const requestNonce = ++accountInfoNonce
+  const isCurrentRequest = () => requestNonce === accountInfoNonce && credentialsMatch(captured, form)
+  accountInfoLoading.value = true
+  if (accountInfoState.value !== 'expired') accountInfoState.value = 'loading'
+  try {
+    const res = await http.post('/users/account-info', { phone, password: captured.password }, { timeout: 120000 })
+    if (!isCurrentRequest()) return
+    const result = normalizeAccountInfo(res.data)
+    if (!result.ok) {
+      accountInfoState.value = accountInfoState.value === 'expired' ? 'expired' : (accountInfoFetched.value ? 'ready' : 'idle')
+      notifyWarning(result.locationMessage || '未能获取账号信息，请核对凭据后重试')
+      return
+    }
+
+    accountInfoProfile.value = result.profile
+    accountInfoReady.value = result.ready
+    accountInfoWarnings.value = [...result.warnings]
+    accountInfoFetched.value = true
+    accountInfoState.value = 'ready'
+    const profile = result.profile
+    const summaryItems = [
+      profile.name && `姓名：${profile.name}`,
+      profile.schoolName && `学校：${profile.schoolName}`,
+      profile.companyName && `企业：${profile.companyName}`,
+      profile.companyAddress && `企业地址：${profile.companyAddress}`,
+      profile.jobAddress && `打卡地址：${profile.jobAddress}`,
+      profile.planName && `计划：${profile.planName}`,
+      `位置来源：${result.accountLocation?.source || '未读取到'}`,
+      `位置状态：${result.ready ? '完整' : '未完整'}`,
+    ].filter(Boolean)
+    accountInfoSummary.value = [...summaryItems, result.locationMessage].filter(Boolean).join('；')
+    setAccountLocation(result.accountLocation, result.locationMessage)
+
+    if (!canApplyPrefillLocation(result.accountLocation)) {
+      const warning = '没有读取到有效经纬度，未自动填写打卡位置；可在打卡设置中手动核对填写'
+      if (!accountInfoWarnings.value.includes(warning)) accountInfoWarnings.value.push(warning)
+      notifyWarning(result.locationMessage || warning)
+      return
+    }
+
+    const hadExistingLocation = hasLocationValues(form.clockIn.location) || accountInfoAutoApplied.value
+    if (hadExistingLocation) {
+      try {
+        await ElMessageBox.confirm(
+          '打卡设置中已有位置。获取账号位置将覆盖现有地址、坐标和省市区，是否继续？',
+          '确认替换打卡位置',
+          { type: 'warning', confirmButtonText: '覆盖并应用', cancelButtonText: '保留现有位置' }
+        )
+      } catch {
+        return
+      }
+      if (!isCurrentRequest()) return
+    }
+    const location = result.accountLocation
+    form.clockIn.location.address = location.address
+    form.clockIn.location.latitude = location.latitude
+    form.clockIn.location.longitude = location.longitude
+    form.clockIn.location.province = location.province
+    form.clockIn.location.city = location.city
+    form.clockIn.location.area = location.area
+    accountInfoAutoApplied.value = true
+    notifySuccess(result.ready ? '账号信息已获取，位置已自动填写；核对摘要后即可保存' : '账号简介已获取，现有坐标已填写；位置尚未完整，请核对后保存')
+  } catch (error) {
+    if (!isCurrentRequest()) return
+    accountInfoState.value = accountInfoState.value === 'expired' ? 'expired' : (accountInfoFetched.value ? 'ready' : 'idle')
+    notifyError(resolveErrorMessage(error, '获取账号信息失败'))
+  } finally {
+    if (requestNonce === accountInfoNonce) accountInfoLoading.value = false
+  }
+}
+
 const canApplyAccountLocation = computed(() => validLocationCoordinates(accountLocation.value))
 
 const applyAccountLocation = async () => {
@@ -925,7 +1033,19 @@ const validateFormBeforePreview = () => {
   return ''
 }
 
+const accountPrefillSaveBlocker = () => {
+  if (isEdit.value) return ''
+  if (accountInfoState.value === 'expired') return '新增用户账号或密码已变更，请重新获取账号信息后再保存'
+  if (accountInfoLoading.value) return '请等待账号信息获取完成后再保存'
+  if (accountInfoFetched.value && form.enable_clockin && !hasAddressAndCoordinates(form.clockIn.location)) {
+    return '账号信息位置未完整：请补全有效地址和经纬度，或明确关闭自动打卡后再保存'
+  }
+  return ''
+}
+
 const persistUserAfterPreview = async () => {
+  const blocker = accountPrefillSaveBlocker()
+  if (blocker) throw new Error(blocker)
   form.clockIn.mode = 'custom'
   form.clockIn.customDays = form.clockIn.schedule.weekdays
   const payload = JSON.parse(JSON.stringify(form))
@@ -949,6 +1069,11 @@ const persistUserAfterPreview = async () => {
 
 const save = async () => {
   if (schedulePreviewLoading.value || saving.value) return
+  const prefillBlocker = accountPrefillSaveBlocker()
+  if (prefillBlocker) {
+    notifyWarning(prefillBlocker)
+    return
+  }
   const validationMessage = validateFormBeforePreview()
   if (validationMessage) {
     notifyWarning(validationMessage)
@@ -960,6 +1085,11 @@ const save = async () => {
     await flushUiMessage()
     const clockIn = JSON.parse(JSON.stringify(form.clockIn))
     const res = await http.post('/schedule/preview', { clockIn })
+    const blockerAfterPreview = accountPrefillSaveBlocker()
+    if (blockerAfterPreview) {
+      notifyWarning(blockerAfterPreview)
+      return
+    }
     if (!Array.isArray(res.data?.dates)) throw new Error('预览接口未返回 dates 日期列表')
     schedulePreview.dates = res.data.dates.filter((date) => typeof date === 'string')
     schedulePreview.timezone = String(res.data.timezone || 'Asia/Shanghai')
@@ -973,6 +1103,11 @@ const save = async () => {
 
 const confirmScheduleAndSave = async () => {
   if (saving.value) return
+  const blocker = accountPrefillSaveBlocker()
+  if (blocker) {
+    notifyWarning(blocker)
+    return
+  }
   saving.value = true
   try {
     await persistUserAfterPreview()
@@ -1343,6 +1478,25 @@ const fillFromAccountAddress = async () => {
     addrFillLoading.value = false
   }
 }
+
+watch(
+  () => [form.phone, form.password],
+  () => {
+    accountInfoNonce += 1
+    accountInfoLoading.value = false
+    if (accountInfoFetched.value) {
+      accountInfoState.value = 'expired'
+      accountInfoProfile.value = null
+      accountInfoReady.value = false
+      accountInfoWarnings.value = []
+      accountInfoSummary.value = '账号或密码已改变；请重新获取账号信息。旧位置仍保留但不会允许保存。'
+      setAccountLocation(null, '凭据已变更，之前读取的位置不再可信')
+    } else if (accountInfoState.value === 'loading') {
+      accountInfoState.value = 'idle'
+    }
+  },
+  { flush: 'sync' }
+)
 
 watch(
   () => reportKeys.map((key) => isReportEnabled(key)).join('|'),
